@@ -9,6 +9,8 @@
 
 Full kernel-level certificate unlock for Sandboxie-Plus **1.17.x** (tested on 1.17.9) via a single `version.dll` proxy. No test-signing, no external files — everything embedded in one DLL.
 
+**Windows x64 only.** The embedded kernel R/W driver (`dbutil_2_3.sys`) is 64-bit, and the kernel module enumeration (`kmod.h`) uses x64-specific struct layouts. 32-bit Windows is not supported. Tested on Windows 11 24H2 (Build 26100).
+
 ## How it works
 
 Sandboxie-Plus uses ECDSA P-256 to validate supporter certificates. The public key is hardcoded in `SbieDrv.sys` (`KphpTrustedPublicKey`). Without a valid certificate, security features are enforced by the kernel driver — processes are killed after 5 minutes or terminated immediately.
