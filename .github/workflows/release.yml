@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v1.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build version.dll
+        shell: cmd
+        run: build.bat
+
+      - name: Verify output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path .\dist\version.dll)) {
+            throw "dist\version.dll was not produced."
+          }
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.tag }}".Trim()
+          } else {
+            $tag = "${{ github.ref_name }}".Trim()
+          }
+
+          if ($tag.StartsWith("refs/tags/")) {
+            $tag = $tag.Substring("refs/tags/".Length)
+          }
+
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw "Release tag is empty."
+          }
+
+          if (-not $tag.StartsWith("v")) {
+            if ($tag -match "^\d+(\.\d+){1,3}$") {
+              $tag = "v$tag"
+            } else {
+              throw "Tag must be like v1.0.0 or 1.0.0."
+            }
+          }
+
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "name=sandboxie_unlocker $tag" >> $env:GITHUB_OUTPUT
+
+      - name: Create release zip
+        id: zip
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $zipName = "sandboxie_unlocker_$tag.zip"
+          Compress-Archive -Path .\dist\version.dll,.\dist\unlock.bat -DestinationPath $zipName
+          "zip=$zipName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: version-dll-release
+          path: dist/version.dll
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          files: ${{ steps.zip.outputs.zip }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
