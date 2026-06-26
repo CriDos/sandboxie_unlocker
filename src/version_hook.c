@@ -454,12 +454,16 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
         CreateThread(NULL, 0, unlock_thread, NULL, 0, NULL);
     }
     else if (reason == DLL_PROCESS_DETACH) {
-        /* Clean process exit (reserved == NULL) — reset crash counter.
-         * If BSOD/kill (reserved != NULL), DETACH may still fire but
-         * we don't reset — the counter stays high so the next boot
-         * enters safe mode automatically. */
-        if (reserved == NULL)
-            crash_count_set(0);
+        /* DllMain(DLL_PROCESS_DETACH) is called on normal process exit
+         * (ExitProcess) with reserved != NULL, and on explicit FreeLibrary
+         * with reserved == NULL.  It is NOT called at all when the process
+         * is killed via TerminateProcess or on BSOD.
+         *
+         * Therefore any DLL_PROCESS_DETACH means a clean exit — reset the
+         * crash counter.  If the process was killed or the system BSOD'd,
+         * DllMain is never called, so the counter stays high and the next
+         * boot enters safe mode automatically. */
+        crash_count_set(0);
     }
     return TRUE;
 }

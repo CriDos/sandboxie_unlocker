@@ -20,8 +20,16 @@ if not defined VSROOT (
 for /f "delims=" %%v in ('dir /b "%VSROOT%\VC\Tools\MSVC"') do set "MSVC_VER=%%v"
 set "MSVC=%VSROOT%\VC\Tools\MSVC\%MSVC_VER%"
 
-:: Find Windows SDK
-for /f "delims=" %%k in ('dir /b "C:\Program Files (x86)\Windows Kits\10\Include"') do set "WINSDK=%%k"
+:: Find Windows SDK (skip non-version folders like "wdf" and incomplete
+:: driver-only kits that lack the ucrt headers needed for user-mode builds)
+set "WINSDK="
+for /f "delims=" %%k in ('dir /b /ad "C:\Program Files (x86)\Windows Kits\10\Include\10.*"') do (
+    if exist "C:\Program Files (x86)\Windows Kits\10\Include\%%k\ucrt\stdlib.h" set "WINSDK=%%k"
+)
+if not defined WINSDK (
+    echo [-] No complete Windows SDK found ^(with ucrt headers^).
+    exit /b 1
+)
 
 set "CL_EXE=%MSVC%\bin\Hostx64\x64\cl.exe"
 set "LINK_EXE=%MSVC%\bin\Hostx64\x64\link.exe"

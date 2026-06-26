@@ -1,4 +1,4 @@
-# Sandboxie-Plus Unlocker v1.0.0
+# Sandboxie-Plus Unlocker v1.0.1
 
 > **EDUCATIONAL PURPOSE ONLY.** This project is a reverse-engineering research
 > artifact intended solely for educational and security-research use. It
