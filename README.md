@@ -1,4 +1,4 @@
-# Sandboxie-Plus Unlocker v1.0.1
+# Sandboxie-Plus Unlocker v1.0.2
 
 > **EDUCATIONAL PURPOSE ONLY.** This project is a reverse-engineering research
 > artifact intended solely for educational and security-research use. It
@@ -50,7 +50,7 @@ Developers: clone the repo, run `build.bat` to compile (outputs to `dist/`), the
 
 ```
 build.bat           # Compile version.dll into dist/ (requires VS Build Tools + Windows SDK)
-dist/unlock.bat     # Menu: install / remove / build / reset crash counter
+dist/unlock.bat     # Menu: install / remove / reset safe-fail state
 ```
 
 After reboot the kernel patch is lost — run Install Hook again. Keypair saved in `keypair.dat` is reused, so cert and .sig files don't need regeneration.
@@ -59,9 +59,9 @@ Remove Hook mirrors the official installer stop sequence: kills GUI processes, r
 
 ## Crash safety
 
-Crash counter in `HKCU\SOFTWARE\sandboxie_unlocker` survives reboots. After 3 abnormal exits (BSOD/kill), DLL enters safe mode — transparent proxy without kernel unlock. Prevents BSOD boot loops without requiring safe mode.
+Safe-fail state in `HKCU\SOFTWARE\sandboxie_unlocker` survives reboots. The DLL marks an active unlock attempt before the risky work starts; if the previous attempt was interrupted, the next run increments `fail_count`. After 3 interrupted attempts, the DLL enters safe mode — transparent proxy without kernel unlock.
 
-Counter resets to 0 on clean process exit (`DLL_PROCESS_DETACH` with `reserved == NULL`). Manual reset via `unlock.bat` option [4].
+Controlled failures clear the active marker without incrementing `fail_count`. A successful unlock resets both `attempt_active` and `fail_count`. Manual reset via `unlock.bat` option [3].
 
 ## Technical details
 
@@ -108,7 +108,7 @@ No SEH in driver — invalid page causes BSOD. Key RVA validated via `ECS1` magi
 sandboxie_unlocker/
 ├── dist/              # End-user release (DLL + unlock.bat)
 │   ├── version.dll    # Pre-built, committed to repo
-│   └── unlock.bat     # Install / remove / build / reset menu
+│   └── unlock.bat     # Install / remove / reset menu
 ├── src/
 │   ├── version_hook.c   # DLL proxy + unlock thread + crash safety
 │   ├── driver_bin.h     # dbutil_2_3.sys as C byte array (embedded, 14840 bytes)

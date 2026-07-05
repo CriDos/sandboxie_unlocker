@@ -60,24 +60,20 @@ echo   [1]  Install Hook
 echo        Copy version.dll, restart SandMan
 echo.
 echo   [2]  Remove Hook
-echo        Delete version.dll, reset crash counter, restart SandMan
+echo        Delete version.dll, reset safe-fail state, restart SandMan
 echo.
-echo   [3]  Build DLL
-echo        Compile version.dll from source (requires VS Build Tools)
-echo.
-echo   [4]  Reset Crash Counter
+echo   [3]  Reset Safe-Fail State
 echo        Clear safe-mode lockout without removing the hook
 echo.
-echo   [5]  Exit
+echo   [4]  Exit
 echo.
 echo ------------------------------------------------------------
-set /p "choice=Select option [1-5]: "
+set /p "choice=Select option [1-4]: "
 
 if "%choice%"=="1" goto install
 if "%choice%"=="2" goto remove
-if "%choice%"=="3" goto build
-if "%choice%"=="4" goto reset
-if "%choice%"=="5" goto end
+if "%choice%"=="3" goto reset
+if "%choice%"=="4" goto end
 
 echo Invalid choice.
 timeout /t 2 >nul
@@ -131,6 +127,10 @@ if not exist "%SBIE_DIR%\version.dll" (
     goto menu
 )
 
+set "reboot_required=0"
+set "dll_locked=0"
+set "dll_delete_scheduled=0"
+
 :: === Full stop sequence (mirrors the official installer) ===
 
 :: Step 1: Kill GUI processes
@@ -183,7 +183,8 @@ for /l %%i in (1,1,10) do (
 if "!drv_stopped!"=="1" (
     echo    SbieDrv unloaded.
 ) else (
-    echo    [-] SbieDrv still loaded — will require reboot.
+    set "reboot_required=1"
+    echo    [-] SbieDrv still loaded - will require reboot.
 )
 
 :: === Delete version.dll with retry ===
@@ -207,11 +208,18 @@ for /l %%i in (1,1,5) do (
 if "!deleted!"=="1" (
     echo    Deleted version.dll
 ) else (
-    echo    [-] Could not delete version.dll — file is still locked.
-    echo        Close all Sandboxie processes and try again.
-    echo.
-    pause
-    goto menu
+    set "dll_locked=1"
+    set "reboot_required=1"
+    echo    [-] Could not delete version.dll - file is still locked.
+    echo        A helper driver may still be loaded from version.dll:driver.
+    echo        Scheduling version.dll deletion on next reboot...
+    powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand JABwACAAPQAgACQAZQBuAHYAOgBEAEwATABfAFQAQQBSAEcARQBUAAoAJABzAHIAYwAgAD0AIABAACIACgB1AHMAaQBuAGcAIABTAHkAcwB0AGUAbQA7AAoAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0ALgBSAHUAbgB0AGkAbQBlAC4ASQBuAHQAZQByAG8AcABTAGUAcgB2AGkAYwBlAHMAOwAKAHAAdQBiAGwAaQBjACAAcwB0AGEAdABpAGMAIABjAGwAYQBzAHMAIABOAGEAdABpAHYAZQBNAGUAdABoAG8AZABzACAAewAKACAAIAAgACAAWwBEAGwAbABJAG0AcABvAHIAdAAoACIAawBlAHIAbgBlAGwAMwAyAC4AZABsAGwAIgAsACAAUwBlAHQATABhAHMAdABFAHIAcgBvAHIAPQB0AHIAdQBlACwAIABDAGgAYQByAFMAZQB0AD0AQwBoAGEAcgBTAGUAdAAuAFUAbgBpAGMAbwBkAGUAKQBdAAoAIAAgACAAIABwAHUAYgBsAGkAYwAgAHMAdABhAHQAaQBjACAAZQB4AHQAZQByAG4AIABiAG8AbwBsACAATQBvAHYAZQBGAGkAbABlAEUAeAAoAHMAdAByAGkAbgBnACAAZQB4AGkAcwB0AGkAbgBnAEYAaQBsAGUATgBhAG0AZQAsACAAcwB0AHIAaQBuAGcAIABuAGUAdwBGAGkAbABlAE4AYQBtAGUALAAgAGkAbgB0ACAAZgBsAGEAZwBzACkAOwAKAH0ACgAiAEAACgBBAGQAZAAtAFQAeQBwAGUAIAAtAFQAeQBwAGUARABlAGYAaQBuAGkAdABpAG8AbgAgACQAcwByAGMACgBpAGYAIAAoAFsATgBhAHQAaQB2AGUATQBlAHQAaABvAGQAcwBdADoAOgBNAG8AdgBlAEYAaQBsAGUARQB4ACgAJABwACwAIAAkAG4AdQBsAGwALAAgADQAKQApACAAewAgAGUAeABpAHQAIAAwACAAfQAgAGUAbABzAGUAIAB7ACAAZQB4AGkAdAAgADEAIAB9AA== >nul 2>&1
+    if not errorlevel 1 (
+        set "dll_delete_scheduled=1"
+        echo        Scheduled for deletion on reboot.
+    ) else (
+        echo        Could not schedule deletion automatically.
+    )
 )
 
 :: Restore original .sig files from backup
@@ -227,14 +235,14 @@ del /f /q "%SBIE_DIR%\Certificate.dat"   >nul 2>&1
 del /f /q "%SBIE_DIR%\keypair.dat"       >nul 2>&1
 del /f /q "%SBIE_DIR%\version_hook.log"  >nul 2>&1
 
-:: Reset crash counter
+:: Reset safe-fail state
 reg delete "HKCU\SOFTWARE\sandboxie_unlocker" /f >nul 2>&1
-echo    Reset crash counter
+echo    Reset safe-fail state
 
 echo.
 
 :: === Restart or reboot depending on driver state ===
-if "!drv_stopped!"=="1" (
+if "!reboot_required!"=="0" (
     echo    Restarting Sandboxie-Plus with original key...
     sc.exe start SbieSvc >nul 2>&1
     timeout /t 2 /nobreak >nul
@@ -242,36 +250,21 @@ if "!drv_stopped!"=="1" (
     echo [+] Hook removed. SandMan restarted.
 ) else (
     echo    [!] REBOOT REQUIRED
-    echo    SbieDrv could not be unloaded and still has the
-    echo    patched key in memory. It will unload on reboot.
+    if not "!drv_stopped!"=="1" (
+        echo    SbieDrv could not be unloaded and will unload on reboot.
+    )
+    if "!dll_locked!"=="1" (
+        echo    version.dll is locked by a loaded helper driver.
+        if "!dll_delete_scheduled!"=="1" (
+            echo    version.dll will be deleted during reboot.
+        ) else (
+            echo    After reboot, run Remove Hook again if version.dll is still present.
+        )
+    )
     echo    Original .sig files have been restored.
     echo    After reboot, Sandboxie-Plus works normally.
     echo.
-    echo [+] Hook removed. Please reboot to complete.
-)
-echo.
-pause
-goto menu
-
-:build
-cls
-echo ============================================================
-echo                    BUILD DLL
-echo ============================================================
-echo.
-:: build.bat is in the repo root (parent of dist\)
-set "REPO_ROOT=%SCRIPT_DIR%.."
-if not exist "%REPO_ROOT%\build.bat" (
-    echo [-] build.bat not found. This option only works from a repo clone.
-    echo.
-    pause
-    goto menu
-)
-call "%REPO_ROOT%\build.bat"
-if exist "%REPO_ROOT%\dist\version.dll" (
-    echo [+] Built version.dll in dist\
-) else (
-    echo [-] Build may have failed — check output above.
+    echo [+] Please reboot to complete removal.
 )
 echo.
 pause
@@ -280,11 +273,11 @@ goto menu
 :reset
 cls
 echo ============================================================
-echo                RESET CRASH COUNTER
+echo                RESET SAFE-FAIL STATE
 echo ============================================================
 echo.
 reg delete "HKCU\SOFTWARE\sandboxie_unlocker" /f >nul 2>&1
-echo [+] Crash counter reset. Safe-mode lockout cleared.
+echo [+] Safe-fail state reset. Safe-mode lockout cleared.
 echo.
 pause
 goto menu

@@ -17,3 +17,6 @@ version_hook.log
 keypair.dat
 sig_backup/
 Certificate.dat
+
+# Local agent instructions
+AGENTS.md
