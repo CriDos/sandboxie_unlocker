@@ -4,8 +4,8 @@
 #ifndef VERSION_H
 #define VERSION_H
 
-#define SBIE_UNLOCKER_VERSION      "1.0.2"
-#define SBIE_UNLOCKER_VERSION_NUM  1,0,2,0
+#define SBIE_UNLOCKER_VERSION      "1.0.3"
+#define SBIE_UNLOCKER_VERSION_NUM  1,0,3,0
 #define SBIE_UNLOCKER_AUTHOR       "HardTest"
 
 #endif /* VERSION_H */

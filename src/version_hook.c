@@ -301,8 +301,47 @@ static void get_self_dir(char *out, ULONG cap)
     if (p) *p = 0;
 }
 
+/* Verify the existing ADS already contains the embedded driver bytes.
+ * Used when the ADS is locked for writing because a previous run's helper
+ * driver (dbutil_2_3.sys) is still image-mapped in the kernel — kdrv_unload
+ * intentionally never stops/deletes the service to avoid BSOD, so the ADS
+ * stays locked by the kernel image section until reboot. */
+static BOOL extract_driver_verify_existing(const char *adsPath)
+{
+    HANDLE hFile = CreateFileA(adsPath, GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                               OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        LOGE("Verify existing ADS: open failed: %lu", GetLastError());
+        return FALSE;
+    }
+
+    DWORD fileSize = GetFileSize(hFile, NULL);
+    if (fileSize == INVALID_FILE_SIZE || fileSize != g_driver_size) {
+        CloseHandle(hFile);
+        LOGW("Verify existing ADS: size %lu != expected %lu", fileSize, g_driver_size);
+        return FALSE;
+    }
+
+    BOOL ok = FALSE;
+    BYTE *buf = (BYTE *)HeapAlloc(GetProcessHeap(), 0, fileSize);
+    if (buf) {
+        DWORD bytesRead = 0;
+        if (ReadFile(hFile, buf, fileSize, &bytesRead, NULL) && bytesRead == fileSize)
+            ok = (memcmp(buf, g_driver_bin, fileSize) == 0);
+        HeapFree(GetProcessHeap(), 0, buf);
+    }
+    CloseHandle(hFile);
+    return ok;
+}
+
 /* Write embedded driver (C byte array) to NTFS ADS of our DLL.
- * Path: C:\...\version.dll:driver — hidden from dir listings. */
+ * Path: C:\...\version.dll:driver — hidden from dir listings.
+ *
+ * If the ADS is already locked (ERROR_SHARING_VIOLATION) because a prior
+ * run's helper driver is still image-mapped in the kernel, verify the
+ * existing ADS content matches the embedded driver and reuse it instead
+ * of failing the unlock — this lets repeated runs work without a reboot. */
 static BOOL extract_driver(char *outPath, ULONG pathCap)
 {
     HMODULE hSelf = GetModuleHandleA("version.dll");
@@ -312,7 +351,16 @@ static BOOL extract_driver(char *outPath, ULONG pathCap)
     HANDLE hFile = CreateFileA(outPath, GENERIC_WRITE, 0, NULL,
                                CREATE_ALWAYS, 0, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
-        LOGE("CreateFile (ADS) failed: %lu path=%s", GetLastError(), outPath);
+        DWORD err = GetLastError();
+        if (err == ERROR_SHARING_VIOLATION) {
+            if (extract_driver_verify_existing(outPath)) {
+                LOGI("ADS locked by live driver, existing content verified — reusing");
+                return TRUE;
+            }
+            LOGE("ADS locked and existing content mismatch: %s", outPath);
+            return FALSE;
+        }
+        LOGE("CreateFile (ADS) failed: %lu path=%s", err, outPath);
         return FALSE;
     }
 

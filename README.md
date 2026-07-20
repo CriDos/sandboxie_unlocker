@@ -1,4 +1,4 @@
-# Sandboxie-Plus Unlocker v1.0.2
+# Sandboxie-Plus Unlocker v1.0.3
 
 > **EDUCATIONAL PURPOSE ONLY.** This project is a reverse-engineering research
 > artifact intended solely for educational and security-research use. It
@@ -7,7 +7,7 @@
 > this to circumvent licensing in any commercial or production deployment.
 > The authors take no responsibility for misuse.
 
-Full kernel-level certificate unlock for Sandboxie-Plus **1.17.x** (tested on 1.17.9) via a single `version.dll` proxy. No test-signing, no external files — everything embedded in one DLL.
+Full kernel-level certificate unlock for Sandboxie-Plus **1.17.x–1.18.x** (tested on 1.17.9 and 1.18.0) via a single `version.dll` proxy. No test-signing, no external files — everything embedded in one DLL.
 
 **Windows x64 only.** The embedded kernel R/W driver (`dbutil_2_3.sys`) is 64-bit, and the kernel module enumeration (`kmod.h`) uses x64-specific struct layouts. 32-bit Windows is not supported. Tested on Windows 11 24H2 (Build 26100).
 
