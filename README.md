@@ -1,4 +1,4 @@
-# Sandboxie-Plus Unlocker v1.0.5
+# Sandboxie-Plus Unlocker
 
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-11_24H2_x64-0078d6?logo=windows&logoColor=white" alt="Windows 11 24H2 x64" />
