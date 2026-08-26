@@ -1,4 +1,4 @@
-# Sandboxie-Plus Unlocker v1.0.4
+# Sandboxie-Plus Unlocker v1.0.5
 
 > **EDUCATIONAL PURPOSE ONLY.** This project is a reverse-engineering research
 > artifact intended solely for educational and security-research use. It
@@ -30,6 +30,7 @@ This tool replaces the public key in the running kernel with a freshly generated
    - Overwrites public key in kernel memory
    - Generates `Certificate.dat` (type: ETERNAL, all features)
    - Backs up and re-signs all `.exe.sig` files
+   - Logs an OS security-state snapshot (vulnerable-driver blocklist flags, Smart App Control, VBS/HVCI, Secure Boot, Driver Verifier, active WDAC policies) so blocked loads can be diagnosed from the log alone
 4. SandMan reads certificate from driver — full unlock
 
 ## Building from source
@@ -119,6 +120,7 @@ sandboxie_unlocker/
 │   ├── kmod.h           # NtQuerySystemInformation: kernel module enumeration
 │   ├── pesearch.h       # PE parsing: find key RVA, store original key
 │   ├── certgen.h        # Certificate.dat generation + .sig re-signing
+│   ├── sysguard.h       # OS security-state snapshot (blocklist, VBS/HVCI, WDAC, ...)
 │   ├── log.h            # File logger (version_hook.log)
 │   ├── version.h        # Version + author metadata
 │   └── version.rc       # PE version info resource

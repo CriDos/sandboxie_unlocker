@@ -202,6 +202,7 @@ BOOL WINAPI my_VerQueryValueW(LPCVOID a, LPCWSTR b, LPVOID *c, PUINT d) {
 #include "kmod.h"
 #include "pesearch.h"
 #include "certgen.h"
+#include "sysguard.h"
 
 /* ------------------------------------------------------------------ */
 /*  Crash safety - prevents BSOD boot loops                            */
@@ -496,6 +497,11 @@ static DWORD WINAPI unlock_thread(LPVOID param)
     log_init();
 
     LOGI("Sandboxie-Plus Unlocker v%s by %s", SBIE_UNLOCKER_VERSION, SBIE_UNLOCKER_AUTHOR);
+
+    /* Diagnostic snapshot of driver-load blockers / interferers. Runs
+     * before mutex and safe-mode checks so it is logged even when the
+     * unlock itself is skipped. */
+    sysguard_log_state();
 
     hMutex = CreateMutexA(NULL, FALSE, "Local\\sandboxie_unlocker_unlock");
     if (hMutex) {
