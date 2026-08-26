@@ -1,5 +1,13 @@
 # Sandboxie-Plus Unlocker v1.0.5
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-11_24H2_x64-0078d6?logo=windows&logoColor=white" alt="Windows 11 24H2 x64" />
+  <img src="https://img.shields.io/badge/C-MSVC_2022-555555?logo=c&logoColor=white" alt="C" />
+  <img src="https://img.shields.io/github/v/release/CriDos/sandboxie_unlocker?label=Release" alt="Release" />
+  <img src="https://img.shields.io/github/actions/workflow/status/CriDos/sandboxie_unlocker/ci.yml?label=CI" alt="CI" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow" alt="MIT" />
+</p>
+
 > **EDUCATIONAL PURPOSE ONLY.** This project is a reverse-engineering research
 > artifact intended solely for educational and security-research use. It
 > demonstrates kernel-level ECDSA key replacement, code-signing bypass, and
