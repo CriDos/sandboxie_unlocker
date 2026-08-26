@@ -154,7 +154,10 @@ static void cert_backup_sigs(const char *sbie_dir, const char *backup_dir)
     if (GetFileAttributesA(test) != INVALID_FILE_ATTRIBUTES)
         return;  /* backup already exists */
 
-    CreateDirectoryA(backup_dir, NULL);
+    if (!CreateDirectoryA(backup_dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        LOGW("sig backup: CreateDirectoryA failed: %lu — originals will be lost on re-sign", GetLastError());
+        return;
+    }
 
     char pattern[MAX_PATH];
     strcpy_s(pattern, MAX_PATH, sbie_dir);

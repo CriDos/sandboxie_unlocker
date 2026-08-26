@@ -4,8 +4,8 @@
  * Loads the Dell-signed driver as a service, opens the device, and
  * provides virtual kernel memory read/write through IOCTLs.
  *
- * The driver binary is stored in an NTFS ADS (version.dll:driver) and
- * loaded from there.  The device name is hardcoded in the driver.
+ * The driver binary is staged by version_hook.c to a temp file and
+ * passed in via kdrv_load.  The device name is hardcoded in the driver.
  *
  * Never stop/delete the service while the driver is live (causes BSOD).
  * Just close handles — stale service is cleaned on next load after reboot.
@@ -16,6 +16,7 @@
 #include <windows.h>
 #include <winioctl.h>
 #include "log.h"
+#include "driver_bin.h"
 
 /* Device name is hardcoded in the driver, independent of service name. */
 #define KDRV_DEVICE   L"\\\\.\\DBUtil_2_3"
@@ -29,7 +30,7 @@ typedef struct {
     SC_HANDLE hScm;
     SC_HANDLE hSvc;
     HANDLE    hDev;
-    char      driverPath[MAX_PATH];  /* ADS path to driver binary */
+    char      driverPath[MAX_PATH];  /* staging path (temp file) */
 } kdrv_t;
 
 /* Unique service name per process to avoid stale service conflicts. */
@@ -105,10 +106,61 @@ static void kdrv_cleanup_stale(SC_HANDLE hScm)
     CloseServiceHandle(hOld);
 }
 
+/* Discard the service just created by the failed load attempt.  Only a
+ * STOPPED service is deleted — the driver never loaded, so this is safe
+ * and prevents per-run service litter in SCM.  A RUNNING service is left
+ * alone (its driver is live; device reuse via fast path on next run). */
+static void kdrv_discard_service(kdrv_t *d)
+{
+    if (d->hSvc) {
+        SERVICE_STATUS st;
+        if (QueryServiceStatus(d->hSvc, &st) && st.dwCurrentState == SERVICE_STOPPED)
+            DeleteService(d->hSvc);
+        CloseServiceHandle(d->hSvc);
+        d->hSvc = NULL;
+    }
+    if (d->hScm) {
+        CloseServiceHandle(d->hScm);
+        d->hScm = NULL;
+    }
+}
+
+/* Verify that the file at path contains exactly the embedded driver bytes.
+ * Called right before CreateService to close the swap race on
+ * user-writable staging paths. */
+static BOOL kdrv_verify_driver_file(const char *path)
+{
+    HANDLE hFile = CreateFileA(path, GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                               OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        LOGE("Verify driver file: open failed: %lu path=%s", GetLastError(), path);
+        return FALSE;
+    }
+
+    DWORD fileSize = GetFileSize(hFile, NULL);
+    if (fileSize == INVALID_FILE_SIZE || fileSize != g_driver_size) {
+        CloseHandle(hFile);
+        LOGW("Verify driver file: size %lu != expected %lu", fileSize, g_driver_size);
+        return FALSE;
+    }
+
+    BOOL ok = FALSE;
+    BYTE *buf = (BYTE *)HeapAlloc(GetProcessHeap(), 0, fileSize);
+    if (buf) {
+        DWORD bytesRead = 0;
+        if (ReadFile(hFile, buf, fileSize, &bytesRead, NULL) && bytesRead == fileSize)
+            ok = (memcmp(buf, g_driver_bin, fileSize) == 0);
+        HeapFree(GetProcessHeap(), 0, buf);
+    }
+    CloseHandle(hFile);
+    return ok;
+}
+
 /* Load the driver: opens device if already running, otherwise creates
  * a service and starts it.  The driver file must already exist at the
- * NTFS ADS path (version.dll:driver).  Returns 0 on success. */
-static int kdrv_load(kdrv_t *d)
+ * staging path produced by extract_driver.  Returns 0 on success. */
+static int kdrv_load(kdrv_t *d, const char *driver_path)
 {
     memset(d, 0, sizeof(*d));
 
@@ -119,16 +171,23 @@ static int kdrv_load(kdrv_t *d)
     /* Unique service name per process */
     wsprintfA(g_svc_name, "sbie_unlock_%lu", GetCurrentProcessId());
 
-    /* Resolve driver path from NTFS ADS of our DLL */
-    HMODULE hSelf = GetModuleHandleA("version.dll");
-    if (hSelf) {
-        GetModuleFileNameA(hSelf, d->driverPath, MAX_PATH);
-        strcat_s(d->driverPath, MAX_PATH, ":driver");
-    }
-    if (!d->driverPath[0] ||
-        GetFileAttributesA(d->driverPath) == INVALID_FILE_ATTRIBUTES) {
-        LOGE("Driver ADS not found — extract_driver must run first");
+    /* Driver path comes from extract_driver (temp staging) */
+    if (!driver_path || !driver_path[0]) {
+        LOGE("No driver path supplied — extract_driver must run first");
         return 1;
+    }
+    strcpy_s(d->driverPath, MAX_PATH, driver_path);
+
+    if (GetFileAttributesA(d->driverPath) == INVALID_FILE_ATTRIBUTES) {
+        LOGE("Driver file not found: %s", d->driverPath);
+        return 1;
+    }
+
+    /* Verify the file on disk exactly matches the embedded driver right
+     * before loading — closes the swap race on writable staging paths */
+    if (!kdrv_verify_driver_file(d->driverPath)) {
+        LOGE("Driver file content verification failed: %s", d->driverPath);
+        return 6;
     }
 
     d->hScm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
@@ -162,16 +221,14 @@ static int kdrv_load(kdrv_t *d)
 
     if (!StartServiceA(d->hSvc, 0, NULL)) {
         DWORD err = GetLastError();
+        LOGE("StartService failed: 0x%lX (%lu) svc=%s", err, err, g_svc_name);
         if (err == ERROR_ALREADY_EXISTS || err == ERROR_SERVICE_MARKED_FOR_DELETE) {
             if (kdrv_try_open_device(d)) return 0;
             Sleep(2000);
             if (kdrv_try_open_device(d)) return 0;
         }
         if (err != ERROR_SERVICE_ALREADY_RUNNING) {
-            CloseServiceHandle(d->hSvc);
-            CloseServiceHandle(d->hScm);
-            d->hSvc = NULL;
-            d->hScm = NULL;
+            kdrv_discard_service(d);
             return 4;
         }
     }
@@ -182,6 +239,7 @@ static int kdrv_load(kdrv_t *d)
             return 0;
         Sleep(100);
     }
+    kdrv_discard_service(d);
     return 5;
 }
 
@@ -191,7 +249,8 @@ static void kdrv_unload(kdrv_t *d)
     if (d->hDev) { CloseHandle(d->hDev); d->hDev = NULL; }
     if (d->hSvc) { CloseServiceHandle(d->hSvc); d->hSvc = NULL; }
     if (d->hScm) { CloseServiceHandle(d->hScm); d->hScm = NULL; }
-    /* Do NOT delete the ADS — it lives with version.dll. */
+    /* Temp file cleanup is handled by cleanup_stale_temp_drivers on the
+     * next run (the mapped image locks the file until reboot). */
 }
 
 #endif /* KDRV_H */

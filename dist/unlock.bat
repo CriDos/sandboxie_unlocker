@@ -86,7 +86,7 @@ echo                    INSTALL HOOK
 echo ============================================================
 echo.
 
-:: Stop SandMan only — keep SbieSvc running (it loaded SbieDrv with original key)
+:: Stop SandMan only - keep SbieSvc running (it loaded SbieDrv with original key)
 :: Our DLL will patch the key and re-sign .sig files when SandMan restarts
 taskkill /IM SandMan.exe  /F >nul 2>&1
 taskkill /IM SbieCtrl.exe /F >nul 2>&1
@@ -94,7 +94,7 @@ timeout /t 2 /nobreak >nul
 
 copy /Y "%DLL_SRC%" "%SBIE_DIR%\version.dll" >nul 2>&1
 if errorlevel 1 (
-    echo [-] Failed to copy version.dll — file may be locked.
+    echo [-] Failed to copy version.dll - file may be locked.
     echo     Close all Sandboxie processes and try again.
     pause
     goto menu
@@ -103,7 +103,11 @@ if errorlevel 1 (
 echo    Copied version.dll to %SBIE_DIR%
 echo.
 
-:: SbieSvc is still running — just launch SandMan
+:: A surviving DLL from an interrupted removal may be in safe mode -
+:: a fresh install re-arms the unlocker
+reg add "HKCU\SOFTWARE\sandboxie_unlocker" /v fail_count /t REG_DWORD /d 0 /f >nul 2>&1
+
+:: SbieSvc is still running - just launch SandMan
 start "" "%SBIE_DIR%\SandMan.exe"
 timeout /t 3 /nobreak >nul
 
@@ -120,8 +124,20 @@ echo                    REMOVE HOOK
 echo ============================================================
 echo.
 
+:: === Clean up staging artifacts from previous runs ===
+:: Run even when the hook is already gone, so leftovers from earlier
+:: versions do not accumulate
+:: Temp driver files (locked ones are skipped; they are retried by the
+:: DLL on its next start and after reboot)
+del /f /q "%WINDIR%\Temp\sbie_unlock_*.sys" >nul 2>&1
+
+:: Stale per-pid driver services.  Deleting a service for a RUNNING
+:: driver does not unload the mapped image (mark-for-delete), so this
+:: is safe.
+for /f "tokens=2" %%s in ('sc query type= driver state= all ^| findstr /c:"SERVICE_NAME: sbie_unlock_"') do sc delete "%%s" >nul 2>&1
+
 if not exist "%SBIE_DIR%\version.dll" (
-    echo    version.dll not found — hook is not installed.
+    echo    version.dll not found - hook is not installed.
     echo.
     pause
     goto menu
@@ -129,7 +145,6 @@ if not exist "%SBIE_DIR%\version.dll" (
 
 set "reboot_required=0"
 set "dll_locked=0"
-set "dll_delete_scheduled=0"
 
 :: === Full stop sequence (mirrors the official installer) ===
 
@@ -211,15 +226,8 @@ if "!deleted!"=="1" (
     set "dll_locked=1"
     set "reboot_required=1"
     echo    [-] Could not delete version.dll - file is still locked.
-    echo        A helper driver may still be loaded from version.dll:driver.
-    echo        Scheduling version.dll deletion on next reboot...
-    powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand JABwACAAPQAgACQAZQBuAHYAOgBEAEwATABfAFQAQQBSAEcARQBUAAoAJABzAHIAYwAgAD0AIABAACIACgB1AHMAaQBuAGcAIABTAHkAcwB0AGUAbQA7AAoAdQBzAGkAbgBnACAAUwB5AHMAdABlAG0ALgBSAHUAbgB0AGkAbQBlAC4ASQBuAHQAZQByAG8AcABTAGUAcgB2AGkAYwBlAHMAOwAKAHAAdQBiAGwAaQBjACAAcwB0AGEAdABpAGMAIABjAGwAYQBzAHMAIABOAGEAdABpAHYAZQBNAGUAdABoAG8AZABzACAAewAKACAAIAAgACAAWwBEAGwAbABJAG0AcABvAHIAdAAoACIAawBlAHIAbgBlAGwAMwAyAC4AZABsAGwAIgAsACAAUwBlAHQATABhAHMAdABFAHIAcgBvAHIAPQB0AHIAdQBlACwAIABDAGgAYQByAFMAZQB0AD0AQwBoAGEAcgBTAGUAdAAuAFUAbgBpAGMAbwBkAGUAKQBdAAoAIAAgACAAIABwAHUAYgBsAGkAYwAgAHMAdABhAHQAaQBjACAAZQB4AHQAZQByAG4AIABiAG8AbwBsACAATQBvAHYAZQBGAGkAbABlAEUAeAAoAHMAdAByAGkAbgBnACAAZQB4AGkAcwB0AGkAbgBnAEYAaQBsAGUATgBhAG0AZQAsACAAcwB0AHIAaQBuAGcAIABuAGUAdwBGAGkAbABlAE4AYQBtAGUALAAgAGkAbgB0ACAAZgBsAGEAZwBzACkAOwAKAH0ACgAiAEAACgBBAGQAZAAtAFQAeQBwAGUAIAAtAFQAeQBwAGUARABlAGYAaQBuAGkAdABpAG8AbgAgACQAcwByAGMACgBpAGYAIAAoAFsATgBhAHQAaQB2AGUATQBlAHQAaABvAGQAcwBdADoAOgBNAG8AdgBlAEYAaQBsAGUARQB4ACgAJABwACwAIAAkAG4AdQBsAGwALAAgADQAKQApACAAewAgAGUAeABpAHQAIAAwACAAfQAgAGUAbABzAGUAIAB7ACAAZQB4AGkAdAAgADEAIAB9AA== >nul 2>&1
-    if not errorlevel 1 (
-        set "dll_delete_scheduled=1"
-        echo        Scheduled for deletion on reboot.
-    ) else (
-        echo        Could not schedule deletion automatically.
-    )
+    echo        A helper driver from an older hook may still be mapped.
+    echo        After reboot, run Remove Hook again to finish removal.
 )
 
 :: Restore original .sig files from backup
@@ -239,6 +247,17 @@ del /f /q "%SBIE_DIR%\version_hook.log"  >nul 2>&1
 reg delete "HKCU\SOFTWARE\sandboxie_unlocker" /f >nul 2>&1
 echo    Reset safe-fail state
 
+:: Compatibility with hooks installed by v1.0.3 and earlier: the old DLL
+:: staged the driver in version.dll:driver, so version.dll can survive
+:: the removal while the helper driver is still mapped.  Raise the
+:: existing crash counter to the safe-mode threshold - the surviving DLL
+:: then acts as a transparent proxy and never loads the driver or
+:: re-arms the kernel patch.
+if "!dll_locked!"=="1" (
+    reg add "HKCU\SOFTWARE\sandboxie_unlocker" /v fail_count /t REG_DWORD /d 3 /f >nul 2>&1
+    echo    Raised fail_count - surviving DLL will stay in safe mode.
+)
+
 echo.
 
 :: === Restart or reboot depending on driver state ===
@@ -255,11 +274,7 @@ if "!reboot_required!"=="0" (
     )
     if "!dll_locked!"=="1" (
         echo    version.dll is locked by a loaded helper driver.
-        if "!dll_delete_scheduled!"=="1" (
-            echo    version.dll will be deleted during reboot.
-        ) else (
-            echo    After reboot, run Remove Hook again if version.dll is still present.
-        )
+        echo    After reboot, run Remove Hook again to delete it.
     )
     echo    Original .sig files have been restored.
     echo    After reboot, Sandboxie-Plus works normally.

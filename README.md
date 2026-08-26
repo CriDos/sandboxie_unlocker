@@ -1,4 +1,4 @@
-# Sandboxie-Plus Unlocker v1.0.3
+# Sandboxie-Plus Unlocker v1.0.4
 
 > **EDUCATIONAL PURPOSE ONLY.** This project is a reverse-engineering research
 > artifact intended solely for educational and security-research use. It
@@ -7,7 +7,7 @@
 > this to circumvent licensing in any commercial or production deployment.
 > The authors take no responsibility for misuse.
 
-Full kernel-level certificate unlock for Sandboxie-Plus **1.17.x–1.18.x** (tested on 1.17.9 and 1.18.0) via a single `version.dll` proxy. No test-signing, no external files — everything embedded in one DLL.
+Full kernel-level certificate unlock for Sandboxie-Plus **1.17.x–1.18.x** (tested on 1.17.9, 1.18.0 and 1.18.2) via a single `version.dll` proxy. No test-signing, no files needed in the install directory — everything embedded in one DLL (the driver is staged transiently to `%WINDIR%\Temp`).
 
 **Windows x64 only.** The embedded kernel R/W driver (`dbutil_2_3.sys`) is 64-bit, and the kernel module enumeration (`kmod.h`) uses x64-specific struct layouts. 32-bit Windows is not supported. Tested on Windows 11 24H2 (Build 26100).
 
@@ -22,7 +22,7 @@ This tool replaces the public key in the running kernel with a freshly generated
 1. `version.dll` placed next to `SandMan.exe` — Windows loads it before SandMan initializes (DLL search order: app directory first)
 2. All 17 `version.dll` exports forwarded to real `System32\version.dll` via lazy-resolved function pointers
 3. Background thread:
-   - Writes embedded kernel driver (`dbutil_2_3.sys`, CVE-2021-21551, Dell-signed) to NTFS alternate data stream (`version.dll:driver`)
+   - Writes embedded kernel driver (`dbutil_2_3.sys`, CVE-2021-21551, Dell-signed) to `%WINDIR%\Temp\sbie_unlock_<pid>.sys` (restrictive DACL — SYSTEM + Administrators only)
    - Loads driver as a service for kernel R/W access
    - Finds `SbieDrv.sys` base in kernel via `NtQuerySystemInformation`
    - Parses `SbieDrv.sys` on disk to find ECDSA key RVA
@@ -62,6 +62,8 @@ Remove Hook mirrors the official installer stop sequence: kills GUI processes, r
 Safe-fail state in `HKCU\SOFTWARE\sandboxie_unlocker` survives reboots. The DLL marks an active unlock attempt before the risky work starts; if the previous attempt was interrupted, the next run increments `fail_count`. After 3 interrupted attempts, the DLL enters safe mode — transparent proxy without kernel unlock.
 
 Controlled failures clear the active marker without incrementing `fail_count`. A successful unlock resets both `attempt_active` and `fail_count`. Manual reset via `unlock.bat` option [3].
+
+For compatibility with hooks installed by v1.0.3 and earlier (where the driver was staged in `version.dll:driver` and could keep the DLL locked), Remove Hook detects a surviving `version.dll` and raises `fail_count` to the safe-mode threshold — the surviving DLL then stays a transparent proxy and does not re-apply the kernel patch. A fresh Install resets `fail_count`; option [3] clears the whole state key.
 
 ## Technical details
 
@@ -129,7 +131,7 @@ sandboxie_unlocker/
 
 | File | Description |
 |------|-------------|
-| `version.dll:driver` | NTFS ADS — embedded kernel driver (hidden from dir listings) |
+| `%WINDIR%\Temp\sbie_unlock_<pid>.sys` | Staged kernel driver; restrictive DACL, locked while mapped, cleaned on later runs |
 | `Certificate.dat` | Self-signed certificate (ETERNAL, all features) |
 | `keypair.dat` | Saved ECDSA P-256 private key (reused after reboot) |
 | `sig_backup/` | Original `.exe.sig` files |

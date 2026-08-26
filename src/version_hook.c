@@ -3,7 +3,8 @@
  *
  * When placed next to SandMan.exe as version.dll, Windows loads this DLL
  * before SandMan initializes.  A background thread:
- *   1. Writes the embedded driver to an NTFS ADS (version.dll:driver)
+ *   1. Writes the embedded driver to %WINDIR%\Temp\sbie_unlock_<pid>.sys
+ *      (restrictive DACL: SYSTEM + Administrators only)
  *   2. Loads the driver as a service for kernel R/W
  *   3. Finds SbieDrv.sys base in kernel and key RVA from PE on disk
  *   4. Generates an ECDSA P-256 keypair (or reuses saved one)
@@ -14,7 +15,7 @@
  * All 17 version.dll exports are forwarded to the real System32 version.dll
  * via lazy-resolved function pointers.  No external files needed.
  *
- * Version: 1.0.2
+ * Version: 1.0.4
  * Author:  HardTest
  */
 
@@ -240,8 +241,12 @@ static void safety_write_dword(const char *name, DWORD val)
     DWORD disp = 0;
     if (RegCreateKeyExA(HKEY_CURRENT_USER, SAFETY_REGKEY, 0, NULL, 0,
                         KEY_WRITE, NULL, &hKey, &disp) == ERROR_SUCCESS) {
-        RegSetValueExA(hKey, name, 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        LONG st = RegSetValueExA(hKey, name, 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        if (st != ERROR_SUCCESS)
+            LOGW("Safe-fail registry write failed: %s err=%ld", name, st);
         RegCloseKey(hKey);
+    } else {
+        LOGW("Safe-fail registry key open failed: %s", SAFETY_REGKEY);
     }
 }
 
@@ -295,72 +300,115 @@ static void safety_clear_active_attempt(void)
 
 static void get_self_dir(char *out, ULONG cap)
 {
+    out[0] = 0;
     HMODULE hSelf = GetModuleHandleA("version.dll");
     GetModuleFileNameA(hSelf, out, cap);
     char *p = strrchr(out, '\\');
     if (p) *p = 0;
 }
 
-/* Verify the existing ADS already contains the embedded driver bytes.
- * Used when the ADS is locked for writing because a previous run's helper
- * driver (dbutil_2_3.sys) is still image-mapped in the kernel — kdrv_unload
- * intentionally never stops/deletes the service to avoid BSOD, so the ADS
- * stays locked by the kernel image section until reboot. */
-static BOOL extract_driver_verify_existing(const char *adsPath)
+/* Build a SECURITY_ATTRIBUTES with a restrictive DACL: only SYSTEM and
+ * Administrators get access.  Prevents same-user (e.g. sandboxed)
+ * processes from swapping the staged driver file before the privileged
+ * service load. */
+static BOOL build_restrictive_sa(SECURITY_ATTRIBUTES *sa)
 {
-    HANDLE hFile = CreateFileA(adsPath, GENERIC_READ,
-                               FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-                               OPEN_EXISTING, 0, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        LOGE("Verify existing ADS: open failed: %lu", GetLastError());
-        return FALSE;
-    }
+    BYTE svcSid[SECURITY_MAX_SID_SIZE], admSid[SECURITY_MAX_SID_SIZE];
+    DWORD svcLen = sizeof(svcSid), admLen = sizeof(admSid);
+    SECURITY_DESCRIPTOR sd;
+    struct { ULONG64 align; BYTE buf[512]; } aclStor;
 
-    DWORD fileSize = GetFileSize(hFile, NULL);
-    if (fileSize == INVALID_FILE_SIZE || fileSize != g_driver_size) {
-        CloseHandle(hFile);
-        LOGW("Verify existing ADS: size %lu != expected %lu", fileSize, g_driver_size);
+    if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION))
         return FALSE;
-    }
+    if (!InitializeAcl((PACL)aclStor.buf, (DWORD)sizeof(aclStor.buf), ACL_REVISION))
+        return FALSE;
+    if (!CreateWellKnownSid(WinLocalSystemSid, NULL, svcSid, &svcLen) ||
+        !CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, admSid, &admLen))
+        return FALSE;
+    if (!AddAccessAllowedAce((PACL)aclStor.buf, ACL_REVISION, GENERIC_ALL, svcSid) ||
+        !AddAccessAllowedAce((PACL)aclStor.buf, ACL_REVISION, GENERIC_ALL, admSid))
+        return FALSE;
+    if (!SetSecurityDescriptorDacl(&sd, TRUE, (PACL)aclStor.buf, FALSE))
+        return FALSE;
 
-    BOOL ok = FALSE;
-    BYTE *buf = (BYTE *)HeapAlloc(GetProcessHeap(), 0, fileSize);
-    if (buf) {
-        DWORD bytesRead = 0;
-        if (ReadFile(hFile, buf, fileSize, &bytesRead, NULL) && bytesRead == fileSize)
-            ok = (memcmp(buf, g_driver_bin, fileSize) == 0);
-        HeapFree(GetProcessHeap(), 0, buf);
-    }
-    CloseHandle(hFile);
-    return ok;
+    sa->nLength = sizeof(*sa);
+    sa->lpSecurityDescriptor = &sd;
+    sa->bInheritHandle = FALSE;
+    return TRUE;
 }
 
-/* Write embedded driver (C byte array) to NTFS ADS of our DLL.
- * Path: C:\...\version.dll:driver — hidden from dir listings.
+/* Remove sbie_unlock_*.sys leftovers from previous runs.  Files still
+ * image-mapped in the kernel or open by a concurrent instance are
+ * skipped — they are picked up again on a later run after reboot.
  *
- * If the ADS is already locked (ERROR_SHARING_VIOLATION) because a prior
- * run's helper driver is still image-mapped in the kernel, verify the
- * existing ADS content matches the embedded driver and reuse it instead
- * of failing the unlock — this lets repeated runs work without a reboot. */
-static BOOL extract_driver(char *outPath, ULONG pathCap)
-{
-    HMODULE hSelf = GetModuleHandleA("version.dll");
-    GetModuleFileNameA(hSelf, outPath, pathCap);
-    strcat_s(outPath, pathCap, ":driver");
+ * Deletion is done by opening with DELETE access and share mode 0:
+ * the open fails for any file that is currently held (staging writer,
+ * kernel image section), which makes the delete atomic and race-free
+ * even across sessions.  Files younger than REUSE_GRACE_SEC are left
+ * alone too — they may belong to an instance that staged them but has
+ * not loaded them yet. */
+#define REUSE_GRACE_SEC 30
 
-    HANDLE hFile = CreateFileA(outPath, GENERIC_WRITE, 0, NULL,
-                               CREATE_ALWAYS, 0, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        DWORD err = GetLastError();
-        if (err == ERROR_SHARING_VIOLATION) {
-            if (extract_driver_verify_existing(outPath)) {
-                LOGI("ADS locked by live driver, existing content verified — reusing");
-                return TRUE;
-            }
-            LOGE("ADS locked and existing content mismatch: %s", outPath);
-            return FALSE;
+static void cleanup_stale_temp_drivers(const char *tempDir)
+{
+    char pattern[MAX_PATH];
+    strcpy_s(pattern, MAX_PATH, tempDir);
+    strcat_s(pattern, MAX_PATH, "\\sbie_unlock_*.sys");
+
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(pattern, &fd);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return;
+
+    FILETIME nowFt;
+    GetSystemTimeAsFileTime(&nowFt);
+
+    static const ULONG64 TICKS_PER_SEC = 10000000;
+
+    UINT removed = 0, locked = 0;
+    do {
+        char p[MAX_PATH];
+        strcpy_s(p, MAX_PATH, tempDir);
+        strcat_s(p, MAX_PATH, "\\");
+        strcat_s(p, MAX_PATH, fd.cFileName);
+
+        ULONG64 now64 = ((ULONG64)nowFt.dwHighDateTime << 32) | nowFt.dwLowDateTime;
+        ULONG64 file64 = ((ULONG64)fd.ftLastWriteTime.dwHighDateTime << 32) |
+                          fd.ftLastWriteTime.dwLowDateTime;
+        ULONG64 ageSec = (now64 > file64) ? (now64 - file64) / TICKS_PER_SEC : 0;
+        if (ageSec < REUSE_GRACE_SEC) {
+            locked++;
+            continue;
         }
-        LOGE("CreateFile (ADS) failed: %lu path=%s", err, outPath);
+
+        HANDLE h = CreateFileA(p, DELETE, 0, NULL, OPEN_EXISTING,
+                               FILE_FLAG_DELETE_ON_CLOSE, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+            removed++;
+        } else {
+            locked++;
+        }
+    } while (FindNextFileA(hFind, &fd));
+    FindClose(hFind);
+
+    LOGI("Stale temp drivers: removed %u, locked %u", removed, locked);
+}
+
+/* Write the embedded driver to a temp file with a restrictive DACL and
+ * verify it on disk.  Returns TRUE and leaves the path in *path. */
+static BOOL write_driver_temp(const char *path)
+{
+    SECURITY_ATTRIBUTES sa;
+    if (!build_restrictive_sa(&sa)) {
+        LOGE("Failed to build restrictive DACL: %lu", GetLastError());
+        return FALSE;
+    }
+
+    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, &sa,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        LOGE("CreateFile (temp driver) failed: %lu path=%s", GetLastError(), path);
         return FALSE;
     }
 
@@ -371,8 +419,59 @@ static BOOL extract_driver(char *outPath, ULONG pathCap)
         LOGE("WriteFile failed: ok=%d written=%lu expected=%lu", ok, written, g_driver_size);
         return FALSE;
     }
-    LOGI("Driver written to ADS (%lu bytes)", written);
+    if (!kdrv_verify_driver_file(path)) {
+        LOGE("Post-write driver verification failed: %s", path);
+        return FALSE;
+    }
+    LOGI("Driver written to %s (%lu bytes, ACL: SYSTEM+Administrators)", path, written);
     return TRUE;
+}
+
+/* Write the embedded driver (C byte array) to
+ * %WINDIR%\Temp\sbie_unlock_<pid>.sys with a restrictive DACL and return
+ * its path in outPath.  The pid-unique name avoids clashes with a
+ * previous instance whose driver is still image-mapped in the kernel
+ * (the mapped image locks the file until reboot). */
+static BOOL extract_driver(char *outPath, ULONG pathCap)
+{
+    char winDir[MAX_PATH];
+    DWORD winLen = GetWindowsDirectoryA(winDir, MAX_PATH);
+    if (!winLen || winLen >= MAX_PATH) {
+        LOGE("GetWindowsDirectoryA failed: %lu", GetLastError());
+        return FALSE;
+    }
+
+    char tempDir[MAX_PATH];
+    strcpy_s(tempDir, MAX_PATH, winDir);
+    strcat_s(tempDir, MAX_PATH, "\\Temp");
+    if (GetFileAttributesA(tempDir) == INVALID_FILE_ATTRIBUTES)
+        CreateDirectoryA(tempDir, NULL);
+
+    if (GetFileAttributesA(tempDir) == INVALID_FILE_ATTRIBUTES) {
+        LOGE("Temp dir not usable: %s", tempDir);
+        return FALSE;
+    }
+
+    cleanup_stale_temp_drivers(tempDir);
+
+    char tempPath[MAX_PATH];
+    wsprintfA(tempPath, "%s\\sbie_unlock_%lu.sys", tempDir, GetCurrentProcessId());
+    if (write_driver_temp(tempPath)) {
+        strcpy_s(outPath, pathCap, tempPath);
+        return TRUE;
+    }
+
+    /* PID recycled + a previous run's driver from the same-named file is
+     * still image-mapped: the file is locked by the kernel image section.
+     * If the existing content is ours, reuse it. */
+    if (kdrv_verify_driver_file(tempPath)) {
+        LOGI("Temp driver locked by live instance, content verified — reusing");
+        strcpy_s(outPath, pathCap, tempPath);
+        return TRUE;
+    }
+
+    LOGE("Driver staging failed: %s", tempPath);
+    return FALSE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -429,9 +528,9 @@ static DWORD WINAPI unlock_thread(LPVOID param)
     }
     LOGI("SbieDir: %s", sbieDir);
 
-    /* 1. Write driver to NTFS ADS */
-    char adsPath[MAX_PATH];
-    if (!extract_driver(adsPath, MAX_PATH)) { err = 2; goto cleanup; }
+    /* 1. Write driver to staging path (temp file) */
+    char driverPath[MAX_PATH];
+    if (!extract_driver(driverPath, MAX_PATH)) { err = 2; goto cleanup; }
 
     /* 2. Find SbieDrv.sys base in kernel (retry — driver may not be loaded yet) */
     ULONG imgSize = 0;
@@ -452,7 +551,7 @@ static DWORD WINAPI unlock_thread(LPVOID param)
     LOGI("Key RVA: 0x%X, kernel VA: 0x%llX", keyRva, keyVa);
 
     /* 4. Load kernel driver for R/W */
-    int load_err = kdrv_load(&drv);
+    int load_err = kdrv_load(&drv, driverPath);
     if (load_err != 0) { LOGE("kdrv_load failed: %d", load_err); err = 5; goto cleanup; }
     LOGI("Kernel driver loaded");
 
@@ -526,11 +625,14 @@ static DWORD WINAPI unlock_thread(LPVOID param)
     cert_backup_sigs(sbieDir, backupDir);
     LOGI(".sig backup done");
 
-    /* 11. Write Certificate.dat */
-    if (cert_write(sbieDir, &kp) == 0)
-        LOGI("Certificate.dat written");
-    else
+    /* 11. Write Certificate.dat.  A missing cert after a kernel patch means
+     * SandMan still enforces the kill-timer — do NOT report success. */
+    if (cert_write(sbieDir, &kp) != 0) {
         LOGE("cert_write failed");
+        err = 12;
+        goto cleanup;
+    }
+    LOGI("Certificate.dat written");
 
     /* 12. Re-sign all .exe.sig files */
     LOGI("Re-signed %d .sig files", cert_resign_all(sbieDir, &kp));
