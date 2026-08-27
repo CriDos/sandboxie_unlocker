@@ -65,15 +65,23 @@ echo.
 echo   [3]  Reset Safe-Fail State
 echo        Clear safe-mode lockout without removing the hook
 echo.
-echo   [4]  Exit
+echo   [4]  Disable Vulnerable Driver Blocklist
+echo        Allow loading of the embedded Dell-signed driver (reboot)
+echo.
+echo   [5]  Enable Vulnerable Driver Blocklist
+echo        Restore the default blocklist state (reboot)
+echo.
+echo   [6]  Exit
 echo.
 echo ------------------------------------------------------------
-set /p "choice=Select option [1-4]: "
+set /p "choice=Select option [1-6]: "
 
 if "%choice%"=="1" goto install
 if "%choice%"=="2" goto remove
 if "%choice%"=="3" goto reset
-if "%choice%"=="4" goto end
+if "%choice%"=="4" goto blk_off
+if "%choice%"=="5" goto blk_on
+if "%choice%"=="6" goto end
 
 echo Invalid choice.
 timeout /t 2 >nul
@@ -293,6 +301,39 @@ echo ============================================================
 echo.
 reg delete "HKCU\SOFTWARE\sandboxie_unlocker" /f >nul 2>&1
 echo [+] Safe-fail state reset. Safe-mode lockout cleared.
+echo.
+pause
+goto menu
+
+:blk_off
+cls
+echo ============================================================
+echo           DISABLE VULNERABLE DRIVER BLOCKLIST
+echo ============================================================
+echo.
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /t REG_DWORD /d 0 /f
+echo.
+echo [+] VulnerableDriverBlocklistEnable=0 set.
+echo     This allows the embedded Dell-signed helper driver
+echo     (dbutil_2_3.sys) to load on systems where the Microsoft
+echo     vulnerable-driver blocklist would refuse it.
+echo.
+echo [!] A REBOOT is required for the change to take effect.
+echo     Install Hook right after the reboot.
+echo.
+pause
+goto menu
+
+:blk_on
+cls
+echo ============================================================
+echo            ENABLE VULNERABLE DRIVER BLOCKLIST
+echo ============================================================
+echo.
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /t REG_DWORD /d 1 /f
+echo.
+echo [+] VulnerableDriverBlocklistEnable=1 (default state restored).
+echo     A REBOOT is required for the change to take effect.
 echo.
 pause
 goto menu

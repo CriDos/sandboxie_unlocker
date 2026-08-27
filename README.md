@@ -59,10 +59,30 @@ Developers: clone the repo, run `build.bat` to compile (outputs to `dist/`), the
 
 ```
 build.bat           # Compile version.dll into dist/ (requires VS Build Tools + Windows SDK)
-dist/unlock.bat     # Menu: install / remove / reset safe-fail state
+dist/unlock.bat     # Menu: install / remove / reset safe-fail state / toggle blocklist
 ```
 
 After reboot the kernel patch is lost — run Install Hook again. Keypair saved in `keypair.dat` is reused, so cert and .sig files don't need regeneration.
+
+## Vulnerable driver blocklist
+
+Windows 11 22H2+ (including 24H2) ships the **Microsoft Vulnerable Driver Blocklist** enabled by default. It blocks the embedded Dell-signed helper driver (`dbutil_2_3.sys`, CVE-2021-21551) at load time with `StartService` error `0x800B010C`, even though the Authenticode signature is valid — the blocklist checks the binary hash, not the signature.
+
+To use the unlocker on a machine where the blocklist refuses the driver, disable it:
+
+1. Run `dist\unlock.bat` as administrator, option **[4] Disable Vulnerable Driver Blocklist** (or set it manually):
+   ```
+   reg add "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /t REG_DWORD /d 0 /f
+   ```
+2. **Reboot** — the change only takes effect after a restart.
+3. Run Install Hook ([1]) as usual.
+
+Restore the default protection at any time with option **[5] Enable Vulnerable Driver Blocklist** (also requires a reboot).
+
+Notes:
+
+- If **Memory Integrity (VBS/HVCI)** is turned on, the blocklist is enforced unconditionally — the registry flag is ignored. In that case disable Memory Integrity first (`Windows Security` → `Device security` → `Core isolation` → `Memory integrity` off, reboot), then disable the blocklist.
+- The flag only governs the vulnerable-driver blocklist; Smart App Control and WDAC policies, if active, are separate and are still reported in `version_hook.log` (the DLL logs the full OS security-state snapshot at unlock start, so a refused load can be diagnosed from the log alone).
 
 Remove Hook mirrors the official installer stop sequence: kills GUI processes, runs `KmdUtil scandll_silent` to terminate sandboxed processes, stops `SbieSvc` and polls for STOPPED, then unloads `SbieDrv` via `KmdUtil stop SbieDrv` (which calls `API_UNLOAD_DRIVER` — requires `Api_UseCount == 1`, i.e. SbieSvc fully stopped). Restores original `.sig` from `sig_backup/`, deletes generated files, restarts services. SandMan reloads `SbieDrv.sys` with the original key — no reboot required.
 
