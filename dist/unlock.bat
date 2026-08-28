@@ -5,7 +5,7 @@ title Sandboxie-Plus Unlocker
 :: ===== Admin check =====
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [!] Administrator rights required.
+    echo [^^!] Administrator rights required.
     echo     Right-click this file and select "Run as administrator".
     echo.
     pause
@@ -30,15 +30,15 @@ if not defined SBIE_DIR (
 )
 
 if not defined SBIE_DIR (
-    echo [!] Sandboxie-Plus installation not found.
+    echo [^^!] Sandboxie-Plus installation not found.
     echo.
     pause
     exit /b 1
 )
 
 if not exist "%DLL_SRC%" (
-    echo [!] version.dll not found next to unlock.bat.
-    echo     If you cloned the repo, run build.bat in the repo root to build it.
+    echo [^^!] version.dll not found next to unlock.bat.
+    echo     If you cloned the repo, run _build.bat in the repo root to build it.
     echo.
     pause
     exit /b 1
@@ -75,6 +75,7 @@ echo.
 echo ------------------------------------------------------------
 set "choice="
 set /p "choice=Select option [1-6]: "
+if not defined choice goto end
 
 if "%choice%"=="1" goto install
 if "%choice%"=="2" goto remove
@@ -114,6 +115,7 @@ echo.
 :: A surviving DLL from an interrupted removal may be in safe mode -
 :: a fresh install re-arms the unlocker
 reg add "HKCU\SOFTWARE\sandboxie_unlocker" /v fail_count /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKCU\SOFTWARE\sandboxie_unlocker" /v attempt_active /t REG_DWORD /d 0 /f >nul 2>&1
 
 :: SbieSvc is still running - just launch SandMan
 start "" "%SBIE_DIR%\SandMan.exe"
@@ -133,18 +135,11 @@ echo ============================================================
 echo.
 
 :: === Clean up staging artifacts from previous runs ===
-:: Run even when the hook is already gone, so leftovers from earlier
-:: versions do not accumulate
-:: Temp driver files (locked ones are skipped; they are retried by the
-:: DLL on its next start and after reboot)
-del /f /q "%WINDIR%\Temp\sbie_unlock_*.sys" >nul 2>&1
-
-:: Stale per-pid driver services.  The pattern also matches the legacy
-:: no-PID service "sbie_unlock" left by pre-1.0.4 staging.  Deleting a
-:: service for a RUNNING driver does not unload the mapped image
-:: (mark-for-delete), so this is safe.
-for /f "tokens=2" %%s in ('sc query type^=^ driver state^=^ all ^| findstr /c:"SERVICE_NAME: sbie_unlock"') do sc delete "%%s" >nul 2>&1
-
+:: NOTE: intentionally placed AFTER the process stop sequence below.
+:: A live DLL may be between writing the temp driver and loading it;
+:: deleting the file inside that window breaks the load.  After the
+:: stop sequence no unlock thread is running.  Locked files (image-
+:: mapped) are skipped; they are retried after reboot.
 if not exist "%SBIE_DIR%\version.dll" (
     echo    version.dll not found - hook is not installed.
     echo.
@@ -215,6 +210,16 @@ if "!drv_stopped!"=="1" (
     echo    [-] SbieDrv still loaded - will require reboot.
 )
 
+:: === Clean up staging artifacts from previous runs ===
+:: Temp driver files (locked ones are skipped; they are retried by the
+:: DLL on its next start and after reboot)
+del /f /q "%WINDIR%\Temp\sbie_unlock_*.sys" >nul 2>&1
+
+:: Stale per-pid driver services ("sbie_unlock_<pid>").  Deleting a
+:: service for a RUNNING driver does not unload the mapped image
+:: (mark-for-delete), so this is safe.
+for /f "tokens=2" %%s in ('sc query type^=^ driver state^=^ all ^| findstr /c:"SERVICE_NAME: sbie_unlock"') do sc delete "%%s" >nul 2>&1
+
 :: === Delete version.dll with retry ===
 set "DLL_TARGET=%SBIE_DIR%\version.dll"
 set "deleted=0"
@@ -239,8 +244,7 @@ if "!deleted!"=="1" (
     set "dll_locked=1"
     set "reboot_required=1"
     echo    [-] Could not delete version.dll - file is still locked.
-    echo        A helper driver from an older hook may still be mapped.
-    echo        After reboot, run Remove Hook again to finish removal.
+    echo        Close all Sandboxie processes, reboot, and run Remove Hook again.
 )
 
 :: Restore original .sig files from backup
@@ -281,13 +285,12 @@ if "!reboot_required!"=="0" (
     start "" "%SBIE_DIR%\SandMan.exe"
     echo [+] Hook removed. SandMan restarted.
 ) else (
-    echo    [!] REBOOT REQUIRED
+    echo    [^^!] REBOOT REQUIRED
     if not "!drv_stopped!"=="1" (
         echo    SbieDrv could not be unloaded and will unload on reboot.
     )
     if "!dll_locked!"=="1" (
-        echo    version.dll is locked by a loaded helper driver.
-        echo    After reboot, run Remove Hook again to delete it.
+        echo    version.dll is still locked - after reboot, run Remove Hook again to delete it.
     )
     echo    Original .sig files have been restored.
     echo    After reboot, Sandboxie-Plus works normally.
@@ -317,13 +320,21 @@ echo           DISABLE VULNERABLE DRIVER BLOCKLIST
 echo ============================================================
 echo.
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /t REG_DWORD /d 0 /f
+if errorlevel 1 (
+    echo.
+    echo [-] Failed to update the registry - change NOT applied.
+    echo     Run this script as administrator and check AV / policy interference.
+    echo.
+    pause
+    goto menu
+)
 echo.
 echo [+] VulnerableDriverBlocklistEnable=0 set.
 echo     This allows the embedded Dell-signed helper driver
 echo     (dbutil_2_3.sys) to load on systems where the Microsoft
 echo     vulnerable-driver blocklist would refuse it.
 echo.
-echo [!] A REBOOT is required for the change to take effect.
+echo [^^!] A REBOOT is required for the change to take effect.
 echo     Install Hook right after the reboot.
 echo.
 pause
@@ -336,6 +347,14 @@ echo            ENABLE VULNERABLE DRIVER BLOCKLIST
 echo ============================================================
 echo.
 reg add "HKLM\SYSTEM\CurrentControlSet\Control\CI\Config" /v VulnerableDriverBlocklistEnable /t REG_DWORD /d 1 /f
+if errorlevel 1 (
+    echo.
+    echo [-] Failed to update the registry - change NOT applied.
+    echo     Run this script as administrator and check AV / policy interference.
+    echo.
+    pause
+    goto menu
+)
 echo.
 echo [+] VulnerableDriverBlocklistEnable=1 (default state restored).
 echo     A REBOOT is required for the change to take effect.

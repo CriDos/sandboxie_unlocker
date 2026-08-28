@@ -104,6 +104,12 @@ static ULONG64 kmod_find(const char *name_lower, ULONG *out_size)
         lower[j] = 0;
 
         if (strstr(lower, name_lower)) {
+            /* Some setups (non-elevated tokens on recent builds) zero
+             * every ImageBase in the list - a zero base is unusable for
+             * kernel R/W and must be reported distinctly. */
+            if (imgBase == 0)
+                LOGE("module '%s' found but ImageBase is 0 "
+                     "(non-elevated host or zeroed module list)", name);
             result = imgBase;
             if (out_size) *out_size = imgSize;
             break;

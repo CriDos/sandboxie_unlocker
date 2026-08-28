@@ -31,7 +31,7 @@ jobs:
 
       - name: Build version.dll
         shell: cmd
-        run: build.bat
+        run: _build.bat ci
 
       - name: Verify output
         shell: pwsh
@@ -39,6 +39,10 @@ jobs:
           if (-not (Test-Path .\dist\version.dll)) {
             throw "dist\version.dll was not produced."
           }
+
+      - name: Run tests
+        shell: cmd
+        run: _tests.bat ci
 
       - name: Resolve release metadata
         id: meta
@@ -75,7 +79,9 @@ jobs:
         run: |
           $tag = "${{ steps.meta.outputs.tag }}"
           git fetch --tags --force origin 2>$null
-          $sha = (git rev-list -n 1 "refs/tags/$tag").Trim()
+          $sha = (git rev-list -n 1 "refs/tags/$tag" 2>$null)
+          if (-not $sha) { throw "Tag $tag not found in the repository." }
+          $sha = $sha.Trim()
           $msg = ((git log -1 --format=%B $sha) -join "`n").Trim()
           if ([string]::IsNullOrWhiteSpace($msg)) {
             $msg = "Release $tag"

@@ -1,19 +1,11 @@
 /*
  * version_hook.c - DLL proxy for version.dll with full kernel unlock
  *
- * When placed next to SandMan.exe as version.dll, Windows loads this DLL
- * before SandMan initializes.  A background thread:
- *   1. Writes the embedded driver to %WINDIR%\Temp\sbie_unlock_<pid>.sys
- *      (restrictive DACL: SYSTEM + Administrators only)
- *   2. Loads the driver as a service for kernel R/W
- *   3. Finds SbieDrv.sys base in kernel and key RVA from PE on disk
- *   4. Generates an ECDSA P-256 keypair (or reuses saved one)
- *   5. Overwrites the public key in kernel memory
- *   6. Generates Certificate.dat signed with our key
- *   7. Re-signs all .exe.sig files
- *
- * All 17 version.dll exports are forwarded to the real System32 version.dll
- * via lazy-resolved function pointers.  No external files needed.
+ * Loaded next to SandMan.exe before it initializes.  A background thread
+ * stages the embedded driver (dbutil_2_3.sys) for kernel R/W, replaces
+ * the ECDSA public key of SbieDrv.sys in kernel memory, and writes a
+ * matching Certificate.dat plus re-signed .exe.sig files.  All 17
+ * version.dll exports are forwarded to the real System32 version.dll.
  *
  * Author:  HardTest
  */
@@ -27,9 +19,11 @@
  * globally before the includes. */
 #pragma warning(disable: 6553)
 #include <windows.h>
+#include <string.h>
 #include <winreg.h>
 #include "version.h"
 #include "log.h"
+#include "hostguard.h"
 
 /* ------------------------------------------------------------------ */
 /*  Real version.dll loaded from System32                             */
@@ -71,8 +65,13 @@ typedef BOOL   (WINAPI *fn_VerQueryValueW)(LPCVOID, LPCWSTR, LPVOID *, PUINT);
 
 #define RESOLVE(name, fn_type) \
     static fn_type real_##name = NULL; \
-    if (!real_##name && g_realVersion) \
-        real_##name = (fn_type)GetProcAddress(g_realVersion, #name)
+    if (!real_##name) { \
+        /* Retry the load on every unresolved call: a one-shot failure \
+         * in DllMain must not leave all exports returning FALSE. */ \
+        if (!g_realVersion) load_real_version(); \
+        if (g_realVersion) \
+            real_##name = (fn_type)GetProcAddress(g_realVersion, #name); \
+    }
 
 __pragma(comment(linker, "/export:GetFileVersionInfoA=my_GetFileVersionInfoA"))
 BOOL WINAPI my_GetFileVersionInfoA(LPCSTR a, DWORD b, DWORD c, LPVOID d) {
@@ -206,23 +205,7 @@ BOOL WINAPI my_VerQueryValueW(LPCVOID a, LPCWSTR b, LPVOID *c, PUINT d) {
 #include "pesearch.h"
 #include "certgen.h"
 #include "sysguard.h"
-
-/* ------------------------------------------------------------------ */
-/*  Crash safety - prevents BSOD boot loops                            */
-/*                                                                    */
-/*  HKCU stores an active attempt marker and a failure counter.        */
-/*  If a previous process died while attempt_active=1, the next run    */
-/*  increments fail_count. Controlled errors clear attempt_active and  */
-/*  do not count as crashes. Successful unlock resets both values.     */
-/*                                                                    */
-/*  After CRASH_LIMIT interrupted attempts, the DLL enters safe mode   */
-/*  and acts as a transparent proxy until the user resets the key.     */
-/* ------------------------------------------------------------------ */
-
-#define SAFETY_REGKEY          "SOFTWARE\\sandboxie_unlocker"
-#define SAFETY_REG_FAIL_COUNT  "fail_count"
-#define SAFETY_REG_ACTIVE      "attempt_active"
-#define CRASH_LIMIT            3
+#include "safety.h"
 
 /* Unlock error codes, in step order. */
 enum {
@@ -240,81 +223,6 @@ enum {
     ERR_CERT,                 /* Certificate.dat write failed             */
 };
 
-static volatile LONG g_safety_attempt_owned = 0;
-
-static DWORD safety_read_dword(const char *name, DWORD def)
-{
-    HKEY hKey;
-    DWORD result = def;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, SAFETY_REGKEY, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        DWORD val = 0, type = 0, sz = sizeof(val);
-        if (RegQueryValueExA(hKey, name, NULL, &type, (LPBYTE)&val, &sz) == ERROR_SUCCESS &&
-            type == REG_DWORD && sz == sizeof(val))
-            result = val;
-        RegCloseKey(hKey);
-    }
-    return result;
-}
-
-static void safety_write_dword(const char *name, DWORD val)
-{
-    HKEY hKey;
-    DWORD disp = 0;
-    if (RegCreateKeyExA(HKEY_CURRENT_USER, SAFETY_REGKEY, 0, NULL, 0,
-                        KEY_WRITE, NULL, &hKey, &disp) == ERROR_SUCCESS) {
-        LONG st = RegSetValueExA(hKey, name, 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
-        if (st != ERROR_SUCCESS)
-            LOGW("Safe-fail registry write failed: %s err=%ld", name, st);
-        RegCloseKey(hKey);
-    } else {
-        LOGW("Safe-fail registry key open failed: %s", SAFETY_REGKEY);
-    }
-}
-
-static BOOL safety_begin_attempt(void)
-{
-    DWORD failures = safety_read_dword(SAFETY_REG_FAIL_COUNT, 0);
-    DWORD active = safety_read_dword(SAFETY_REG_ACTIVE, 0);
-
-    if (active) {
-        failures++;
-        safety_write_dword(SAFETY_REG_FAIL_COUNT, failures);
-        safety_write_dword(SAFETY_REG_ACTIVE, 0);
-        LOGW("Previous unlock attempt was interrupted; fail count=%lu", failures);
-    }
-
-    if (failures >= CRASH_LIMIT) {
-        LOGW("SAFE MODE: fail count=%lu >= %d, skipping unlock", failures, CRASH_LIMIT);
-        LOGW("Reset via unlock.bat or delete HKCU\\%s", SAFETY_REGKEY);
-        return FALSE;
-    }
-
-    InterlockedExchange(&g_safety_attempt_owned, 1);
-    safety_write_dword(SAFETY_REG_ACTIVE, 1);
-    LOGI("Unlock attempt started (fail count=%lu)", failures);
-    return TRUE;
-}
-
-static void safety_finish_success(void)
-{
-    safety_write_dword(SAFETY_REG_FAIL_COUNT, 0);
-    safety_write_dword(SAFETY_REG_ACTIVE, 0);
-    InterlockedExchange(&g_safety_attempt_owned, 0);
-    LOGI("Safe-fail state reset after successful unlock");
-}
-
-static void safety_finish_failure(void)
-{
-    safety_write_dword(SAFETY_REG_ACTIVE, 0);
-    InterlockedExchange(&g_safety_attempt_owned, 0);
-    LOGI("Unlock attempt ended with a controlled failure");
-}
-
-static void safety_clear_active_attempt(void)
-{
-    safety_write_dword(SAFETY_REG_ACTIVE, 0);
-}
-
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
 /* ------------------------------------------------------------------ */
@@ -322,68 +230,9 @@ static void safety_clear_active_attempt(void)
 static void get_self_dir(char *out, ULONG cap)
 {
     out[0] = 0;
-    HMODULE hSelf = GetModuleHandleA("version.dll");
-    GetModuleFileNameA(hSelf, out, cap);
+    GetModuleFileNameA(g_self_module, out, cap);
     char *p = strrchr(out, '\\');
     if (p) *p = 0;
-}
-
-/* Remove sbie_unlock_*.sys leftovers from previous runs.  Files still
- * image-mapped in the kernel or open by a concurrent instance are
- * skipped - they are picked up again on a later run after reboot.
- *
- * Deletion is done by opening with DELETE access and share mode 0:
- * the open fails for any file that is currently held (staging writer,
- * kernel image section), which makes the delete atomic and race-free
- * even across sessions.  Files younger than REUSE_GRACE_SEC are left
- * alone too - they may belong to an instance that staged them but has
- * not loaded them yet. */
-#define REUSE_GRACE_SEC 30
-
-static void cleanup_stale_temp_drivers(const char *tempDir)
-{
-    char pattern[MAX_PATH];
-    strcpy_s(pattern, MAX_PATH, tempDir);
-    strcat_s(pattern, MAX_PATH, "\\sbie_unlock_*.sys");
-
-    WIN32_FIND_DATAA fd;
-    HANDLE hFind = FindFirstFileA(pattern, &fd);
-    if (hFind == INVALID_HANDLE_VALUE)
-        return;
-
-    FILETIME nowFt;
-    GetSystemTimeAsFileTime(&nowFt);
-
-    static const ULONG64 TICKS_PER_SEC = 10000000;
-
-    UINT removed = 0, locked = 0;
-    do {
-        char p[MAX_PATH];
-        strcpy_s(p, MAX_PATH, tempDir);
-        strcat_s(p, MAX_PATH, "\\");
-        strcat_s(p, MAX_PATH, fd.cFileName);
-
-        ULONG64 now64 = ((ULONG64)nowFt.dwHighDateTime << 32) | nowFt.dwLowDateTime;
-        ULONG64 file64 = ((ULONG64)fd.ftLastWriteTime.dwHighDateTime << 32) |
-                          fd.ftLastWriteTime.dwLowDateTime;
-        ULONG64 ageSec = (now64 > file64) ? (now64 - file64) / TICKS_PER_SEC : 0;
-        if (ageSec < REUSE_GRACE_SEC) {
-            locked++;
-            continue;
-        }
-
-        HANDLE h = CreateFileA(p, DELETE, 0, NULL, OPEN_EXISTING,
-                               FILE_FLAG_DELETE_ON_CLOSE, NULL);
-        if (h != INVALID_HANDLE_VALUE) {
-            CloseHandle(h);
-            removed++;
-        } else {
-            locked++;
-        }
-    } while (FindNextFileA(hFind, &fd));
-    FindClose(hFind);
-
-    LOGI("Stale temp drivers: removed %u, locked %u", removed, locked);
 }
 
 /* Write the embedded driver to a temp file with a restrictive DACL and
@@ -399,6 +248,10 @@ static BOOL write_driver_temp(const char *path)
         LOGE("Failed to build restrictive DACL: %lu", GetLastError());
         return FALSE;
     }
+
+    /* CREATE_ALWAYS keeps the existing file's DACL - delete first
+     * (same quirk as ec_save_keypair). */
+    DeleteFileA(path);
 
     HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, &sa,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -422,11 +275,9 @@ static BOOL write_driver_temp(const char *path)
     return TRUE;
 }
 
-/* Write the embedded driver (C byte array) to
- * %WINDIR%\Temp\sbie_unlock_<pid>.sys with a restrictive DACL and return
- * its path in outPath.  The pid-unique name avoids clashes with a
- * previous instance whose driver is still image-mapped in the kernel
- * (the mapped image locks the file until reboot). */
+/* Stage the embedded driver to %WINDIR%\Temp\sbie_unlock_<pid>.sys and
+ * return its path.  The pid-unique name avoids clashes with a previous
+ * instance whose mapped image still locks its staging file. */
 static BOOL extract_driver(char *outPath, ULONG pathCap)
 {
     char winDir[MAX_PATH];
@@ -472,7 +323,8 @@ static BOOL extract_driver(char *outPath, ULONG pathCap)
 /* Steps 6-8 of the unlock: ensure a usable keypair (reuse the saved one
  * when the kernel is already patched, else generate), write its public
  * blob over the kernel key, and verify the write.  Returns 0 on success,
- * an ERR_* code on failure.  On failure *kp is left fully freed. */
+ * an ERR_* code on failure.  On failure *kp is left in a state safe for
+ * one ec_free_keypair call by the caller (the caller owns the free). */
 static int patch_kernel_key(kdrv_t *drv, ULONG64 keyVa, BOOL alreadyPatched,
                             const char *keypairPath, ec_keypair_t *kp)
 {
@@ -540,9 +392,13 @@ static DWORD WINAPI unlock_thread(LPVOID param)
 
     LOGI("Sandboxie-Plus Unlocker v%s by %s", SBIE_UNLOCKER_VERSION, SBIE_UNLOCKER_AUTHOR);
 
-    /* Diagnostic snapshot of driver-load blockers / interferers. Runs
-     * before mutex and safe-mode checks so it is logged even when the
-     * unlock itself is skipped. */
+    /* Only SandMan.exe performs the unlock; others skip silently. */
+    if (!is_sandman_process()) {
+        LOGI("Host process is not SandMan.exe - staying a transparent proxy");
+        return 0;
+    }
+
+    /* Logged even when the unlock is skipped (before mutex/safe-mode). */
     sysguard_log_state();
 
     hMutex = CreateMutexA(NULL, FALSE, "Local\\sandboxie_unlocker_unlock");
@@ -595,6 +451,16 @@ static DWORD WINAPI unlock_thread(LPVOID param)
     /* 3. Find key RVA from PE on disk */
     ULONG keyRva = pe_find_key_rva(sbieDrvPath);
     if (!keyRva) { LOGE("ECDSA key not found in SbieDrv.sys on disk"); err = ERR_KEY_RVA; goto cleanup; }
+    /* The loaded module may be a different version than the file on
+     * disk (upgrade between hook install and this run).  A read past
+     * the image would hit unmapped memory and BSOD in the un-SEH'd
+     * helper driver - refuse instead. */
+    if ((ULONG64)keyRva + BLOB_SIZE > imgSize) {
+        LOGE("Key RVA 0x%X (+%d) outside loaded SbieDrv image (0x%X) - version mismatch",
+             keyRva, BLOB_SIZE, imgSize);
+        err = ERR_KEY_RVA;
+        goto cleanup;
+    }
     ULONG64 keyVa = sbieBase + keyRva;
     LOGI("Key RVA: 0x%X, kernel VA: 0x%llX", keyRva, keyVa);
 
@@ -646,7 +512,11 @@ static DWORD WINAPI unlock_thread(LPVOID param)
     LOGI("Certificate.dat written");
 
     /* 12. Re-sign all .exe.sig files */
-    LOGI("Re-signed %d .sig files", cert_resign_all(sbieDir, &kp));
+    int resigned = cert_resign_all(sbieDir, &kp);
+    if (resigned)
+        LOGI("Re-signed %d .sig files", resigned);
+    else
+        LOGW("No .sig files re-signed - unexpected installation layout");
 
     LOGI("Unlock complete!");
     safety_finish_success();
@@ -672,19 +542,16 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
     (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hinst);
+        g_self_module = hinst;
         load_real_version();
         HANDLE hThread = CreateThread(NULL, 0, unlock_thread, NULL, 0, NULL);
         if (hThread) CloseHandle(hThread);
+        else LOGE("CreateThread (unlock) failed: %lu", GetLastError());
     }
     else if (reason == DLL_PROCESS_DETACH) {
-        /* DllMain(DLL_PROCESS_DETACH) is called on normal process exit
-         * (ExitProcess) with reserved != NULL, and on explicit FreeLibrary
-         * with reserved == NULL.  It is NOT called at all when the process
-         * is killed via TerminateProcess or on BSOD.
-         *
-         * Therefore any DLL_PROCESS_DETACH means the current attempt did
-         * not die abnormally.  Clear the active marker, but leave fail_count
-         * untouched unless unlock_thread completed successfully. */
+        /* DETACH does not run on TerminateProcess or BSOD, so reaching it
+         * means the attempt did not die abnormally: clear the active
+         * marker, leave fail_count to the unlock thread. */
         if (InterlockedCompareExchange(&g_safety_attempt_owned, 0, 1) == 1)
             safety_clear_active_attempt();
     }

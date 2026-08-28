@@ -1,11 +1,8 @@
 /*
- * sysguard.h - OS security-state snapshot for the unlock log
- *
- * Logs, at unlock start, the raw registry state of mechanisms that can
- * block or interfere with loading the helper driver or with the kernel
- * patch: vulnerable driver blocklist (CI\Config), Smart App Control,
- * VBS/HVCI, Secure Boot, Driver Verifier, WDAC policy keys, and the
- * Windows build number.  Read-only, values as-is, no interpretation.
+ * sysguard.h - raw registry snapshot (log only, no interpretation) of
+ * mechanisms that can block the helper driver or the kernel patch:
+ * CI\Config blocklist, Smart App Control, VBS/HVCI, Secure Boot,
+ * Driver Verifier, WDAC policies, OS build.
  */
 #ifndef SYSGUARD_H
 #define SYSGUARD_H

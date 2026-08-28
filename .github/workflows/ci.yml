@@ -26,7 +26,7 @@ jobs:
 
       - name: Build version.dll
         shell: cmd
-        run: build.bat
+        run: _build.bat ci
 
       - name: Verify output
         shell: pwsh
@@ -34,6 +34,10 @@ jobs:
           if (-not (Test-Path .\dist\version.dll)) {
             throw "dist\version.dll was not produced."
           }
+
+      - name: Run tests
+        shell: cmd
+        run: _tests.bat ci
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v5

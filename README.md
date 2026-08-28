@@ -37,7 +37,7 @@ At startup the DLL also logs an OS security-state snapshot (vulnerable-driver bl
 
 **End users:** download the release zip, extract `version.dll` and `unlock.bat` to the same folder, run `unlock.bat` as administrator, pick **[1] Install Hook**. You can also just copy `version.dll` into the Sandboxie-Plus installation folder directly.
 
-**From source:** clone the repo and run `build.bat` (requires VS 2022+ Build Tools with the C++ workload and Windows SDK 10 — auto-detected via `vswhere.exe`). Output lands in `dist/`, then run `dist\unlock.bat`. No external dependencies — links against `bcrypt.lib`, `user32.lib`, `advapi32.lib`, `ntdll.lib`; the driver is embedded as a C byte array (`driver_bin.h`).
+**From source:** clone the repo and run `_build.bat` (requires VS 2022+ Build Tools with the C++ workload and Windows SDK 10 — auto-detected via `vswhere.exe`). Output lands in `dist/`, then run `dist\unlock.bat`. No external dependencies — links against `bcrypt.lib`, `user32.lib`, `advapi32.lib`, `ntdll.lib`; the driver is embedded as a C byte array (`driver_bin.h`).
 
 After a reboot the kernel patch is gone — run Install Hook again. The keypair saved in `keypair.dat` is reused, so the certificate and `.sig` files do not need regeneration.
 
@@ -69,7 +69,7 @@ Remove Hook mirrors the official installer stop sequence: kills GUI processes, r
 
 Safe-fail state in `HKCU\SOFTWARE\sandboxie_unlocker` survives reboots. The DLL marks an active unlock attempt before the risky work starts; if the previous attempt was interrupted, the next run increments `fail_count`. After 3 interrupted attempts, the DLL enters safe mode — a transparent proxy without kernel unlock.
 
-Controlled failures clear the active marker without incrementing `fail_count`. A successful unlock resets both values. Remove Hook also raises `fail_count` when it detects a surviving DLL from a v1.0.3-or-earlier hook (legacy ADS staging), forcing it to stay a transparent proxy. Manual reset via `unlock.bat` option [3].
+Controlled failures clear the active marker without incrementing `fail_count`. A successful unlock resets both values. Manual reset via `unlock.bat` option [3].
 
 ## Technical details
 
@@ -120,19 +120,35 @@ sandboxie_unlocker/
 │   ├── version_hook.c   # DLL proxy + unlock thread + crash safety
 │   ├── driver_bin.h     # dbutil_2_3.sys as C byte array (embedded, 14840 bytes)
 │   ├── ecrypto.h        # ECDSA P-256 via CNG (bcrypt.dll), keypair save/load
-│   ├── fileio.h         # Read whole file into a heap buffer
+│   ├── fileio.h         # Read whole file + stale staging cleanup
 │   ├── kdrv.h           # Kernel R/W via IOCTLs, service management
 │   ├── kmod.h           # NtQuerySystemInformation: kernel module enumeration
 │   ├── pesearch.h       # PE parsing: find key RVA, store original key
 │   ├── certgen.h        # Certificate.dat generation + .sig re-signing
+│   ├── safety.h         # Safe-fail state machine (interrupted-attempt counter)
+│   ├── hostguard.h      # Host process gate (unlock only inside SandMan.exe)
 │   ├── sysguard.h       # OS security-state snapshot (blocklist, VBS/HVCI, WDAC, ...)
 │   ├── log.h            # File logger (version_hook.log)
 │   ├── version.h        # Version + author metadata
 │   └── version.rc       # PE version info resource
-├── build.bat          # MSVC build script (outputs to dist/)
+├── tests/
+│   ├── testfw.h         # Minimal test framework (groups, PASS/FAIL/SKIP, filter)
+│   ├── selftest.c       # Unit + filesystem tests (crypto, PE, cleanup, DACL, ...)
+│   └── proxytest.c      # Loads the built DLL: export forwarding, host filter
+├── _tests.bat         # Builds and runs the whole suite, non-zero exit on failure
+├── _build.bat         # MSVC build script (outputs to dist/)
 ├── .github/workflows/ # CI + release automation
 └── README.md
 ```
+
+## Testing
+
+`_tests.bat` builds and runs the suite (MSVC, no external dependencies). It is safe on any machine: kernel and live-Sandboxie paths are never exercised. Started without arguments (e.g. double-click) the console stays open after the run; pass any argument (CI) to exit immediately.
+
+- `selftest.c` — base64 vectors, ECDSA sign/verify round-trips via CNG, keypair persistence (blob + file with admin-DACL awareness), certificate body hash, PE offset→RVA mapping on a real file plus a synthetic SbieDrv-like fixture (original key, patched fallback, multi-magic, truncated key, bogus headers), fileio edge cases, stale staging cleanup, certificate layout, restrictive DACL behavior per token elevation, safe-fail state machine, host-filter predicate, staged-driver byte verification, kernel module lookup smoke.
+- `proxytest.c` — loads the built `dist\version.dll` into a non-SandMan process: all 17 exports resolvable, version-resource query round-trips through the real version.dll (FileVersion == build version), failure hosts degrade gracefully, host filter logs the skip line, host safe-fail registry state untouched.
+
+CI runs the suite on every push (`.github/workflows/ci.yml`).
 
 ## Runtime artifacts
 

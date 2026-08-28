@@ -45,8 +45,8 @@ static int sha256_file(const char *path, BYTE *out)
         return 3;
     }
 
-    /* 64KB would blow the /analyze stack budget on the unlock thread;
-     * the file hashing is single-threaded, so a static buffer is safe. */
+    /* 64KB on the unlock thread's stack would be reckless; the file
+     * hashing is single-threaded, so a static buffer is safe. */
     static BYTE buf[65536];
     DWORD bytesRead;
     BOOL readOk = TRUE;
@@ -187,15 +187,10 @@ static int cert_resign_one(const char *exe_path, const char *sig_path,
     return 0;
 }
 
-/* Backup original .sig files (only if backup doesn't exist yet). */
+/* Backup original .sig files; per-file "copy only if missing" so a
+ * partial backup from an interrupted run gets completed. */
 static void cert_backup_sigs(const char *sbie_dir, const char *backup_dir)
 {
-    char test[MAX_PATH];
-    strcpy_s(test, MAX_PATH, backup_dir);
-    strcat_s(test, MAX_PATH, "\\SandMan.exe.sig");
-    if (GetFileAttributesA(test) != INVALID_FILE_ATTRIBUTES)
-        return;  /* backup already exists */
-
     if (!CreateDirectoryA(backup_dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
         LOGW("sig backup: CreateDirectoryA failed: %lu - originals will be lost on re-sign", GetLastError());
         return;
@@ -217,6 +212,8 @@ static void cert_backup_sigs(const char *sbie_dir, const char *backup_dir)
         strcpy_s(dst, MAX_PATH, backup_dir);
         strcat_s(dst, MAX_PATH, "\\");
         strcat_s(dst, MAX_PATH, fd.cFileName);
+        if (GetFileAttributesA(dst) != INVALID_FILE_ATTRIBUTES)
+            continue;  /* backup copy already present */
         if (!CopyFileA(src, dst, FALSE))
             LOGW("sig backup: copy failed: %s -> %s err=%lu", src, dst, GetLastError());
     } while (FindNextFileA(hFind, &fd));

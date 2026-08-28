@@ -1,11 +1,19 @@
 @echo off
 setlocal enabledelayedexpansion
 
+:: MSVC build script - compiles version.dll into dist\.
+:: Started WITHOUT arguments (e.g. double-click) the console stays open
+:: after the run so errors/results can be read.  Pass any argument (CI,
+:: _tests.bat) to exit immediately.
+
+set "RC=0"
+
 :: Find Visual Studio via vswhere
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
     echo [-] vswhere.exe not found. Install Visual Studio Build Tools.
-    exit /b 1
+    set "RC=1"
+    goto done
 )
 
 for /f "usebackq delims=" %%v in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSROOT=%%v"
@@ -13,7 +21,8 @@ for /f "usebackq delims=" %%v in (`"%VSWHERE%" -latest -products * -property ins
 
 if not defined VSROOT (
     echo [-] Visual Studio installation not found.
-    exit /b 1
+    set "RC=1"
+    goto done
 )
 
 :: Find MSVC toolchain version
@@ -28,7 +37,8 @@ for /f "delims=" %%k in ('dir /b /ad "C:\Program Files (x86)\Windows Kits\10\Inc
 )
 if not defined WINSDK (
     echo [-] No complete Windows SDK found ^(with ucrt headers^).
-    exit /b 1
+    set "RC=1"
+    goto done
 )
 
 set "CL_EXE=%MSVC%\bin\Hostx64\x64\cl.exe"
@@ -47,26 +57,30 @@ echo [*] Building version.dll...
 "%CL_EXE%" /c /O2 /MT /W4 /nologo "%SRCDIR%version_hook.c" /Fo:"%OUTDIR%\version_hook.obj"
 if errorlevel 1 (
     echo [-] Compile failed
-    exit /b 1
+    set "RC=1"
+    goto done
 )
 
 :: Find rc.exe (Windows SDK)
 set "RC_EXE=C:\Program Files (x86)\Windows Kits\10\bin\%WINSDK%\x64\rc.exe"
 if not exist "%RC_EXE%" (
     echo [-] rc.exe not found in Windows SDK
-    exit /b 1
+    set "RC=1"
+    goto done
 )
 
 "%RC_EXE%" /nologo /fo "%OUTDIR%\version.res" "%SRCDIR%version.rc"
 if errorlevel 1 (
     echo [-] Resource compile failed
-    exit /b 1
+    set "RC=1"
+    goto done
 )
 
 "%LINK_EXE%" /DLL /NOLOGO /OUT:"%OUTDIR%\version.dll" "%OUTDIR%\version_hook.obj" "%OUTDIR%\version.res" bcrypt.lib user32.lib advapi32.lib ntdll.lib
 if errorlevel 1 (
     echo [-] Link failed
-    exit /b 1
+    set "RC=1"
+    goto done
 )
 
 del "%OUTDIR%\version_hook.obj" 2>nul
@@ -75,3 +89,11 @@ del "%OUTDIR%\version.lib" 2>nul
 del "%OUTDIR%\version.res" 2>nul
 
 echo [+] Built: %OUTDIR%\version.dll
+
+:done
+if not "%RC%"=="0" echo [-] BUILD FAILED
+if "%RC%"=="0" echo [+] BUILD OK
+
+:: Interactive run (no arguments): keep the console open.
+if "%~1"=="" pause
+exit /b %RC%

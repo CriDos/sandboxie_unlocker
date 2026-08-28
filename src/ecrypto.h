@@ -98,11 +98,9 @@ static void ec_free_keypair(ec_keypair_t *kp)
     if (kp->hAlg) { BCryptCloseAlgorithmProvider(kp->hAlg, 0); kp->hAlg = NULL; }
 }
 
-/* Restrictive DACL: SYSTEM + Administrators only.  Used for keypair.dat
- * (private key must not be readable by ordinary users) and for the staged
- * helper driver file.
- * *sd and *acl must live in the CALLER's frame: sa->lpSecurityDescriptor
- * points at *sd and is consumed by CreateFileA after this function returns. */
+/* Restrictive DACL (SYSTEM + Administrators) for keypair.dat and the
+ * staged driver file.  *sd and *acl must live in the CALLER's frame: sa
+ * points into them and is consumed by CreateFileA after the return. */
 static BOOL build_restrictive_sa(SECURITY_ATTRIBUTES *sa,
                                  SECURITY_DESCRIPTOR *sd, PACL acl, DWORD aclLen)
 {
@@ -147,10 +145,10 @@ static int ec_save_keypair(const ec_keypair_t *kp, const char *path)
     SECURITY_DESCRIPTOR sd;
     BYTE aclBuf[512];   /* plenty: 2 ACEs need ~52 bytes */
     BOOL hasSa = build_restrictive_sa(&sa, &sd, (PACL)aclBuf, (DWORD)sizeof(aclBuf));
-    /* CREATE_ALWAYS keeps the DACL of an existing file - delete it first
-     * so a file left by an older version with a wide-open ACL is not
-     * silently preserved. */
-    if (hasSa) DeleteFileA(path);
+    /* CREATE_ALWAYS keeps the existing file's DACL - delete first so a
+     * wide-open ACL is never silently preserved. */
+    if (hasSa && !DeleteFileA(path) && GetLastError() != ERROR_FILE_NOT_FOUND)
+        LOGW("keypair.dat: old file delete failed: %lu", GetLastError());
     HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, hasSa ? &sa : NULL,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
@@ -173,7 +171,14 @@ static int ec_load_keypair(ec_keypair_t *kp, const char *path)
     DWORD fileSize = 0;
     /* A P-256 private blob is ~104 bytes; anything beyond a few KB is
      * corrupt or hostile - reject before allocating. */
-    if (!read_file_all(path, &blob, &fileSize, 4096)) return 1;
+    if (!read_file_all(path, &blob, &fileSize, 4096)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_ACCESS_DENIED)
+            LOGW("keypair load: %s is admin-locked (non-elevated host?)", path);
+        else
+            LOGW("keypair load: read failed: %lu", err);
+        return 1;
+    }
 
     NTSTATUS st = BCryptOpenAlgorithmProvider(&kp->hAlg, L"ECDSA_P256", NULL, 0);
     if (st) { HeapFree(GetProcessHeap(), 0, blob); return 2; }

