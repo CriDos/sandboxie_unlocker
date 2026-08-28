@@ -1,6 +1,5 @@
 @echo off
 setlocal enabledelayedexpansion
-chcp 1251 >nul 2>&1
 title Sandboxie-Plus Unlocker
 
 :: ===== Admin check =====
@@ -142,7 +141,7 @@ del /f /q "%WINDIR%\Temp\sbie_unlock_*.sys" >nul 2>&1
 :: Stale per-pid driver services.  Deleting a service for a RUNNING
 :: driver does not unload the mapped image (mark-for-delete), so this
 :: is safe.
-for /f "tokens=2" %%s in ('sc query type= driver state= all ^| findstr /c:"SERVICE_NAME: sbie_unlock_"') do sc delete "%%s" >nul 2>&1
+for /f "tokens=2" %%s in ('sc query type^=^ driver state^=^ all ^| findstr /c:"SERVICE_NAME: sbie_unlock_"') do sc delete "%%s" >nul 2>&1
 
 if not exist "%SBIE_DIR%\version.dll" (
     echo    version.dll not found - hook is not installed.
