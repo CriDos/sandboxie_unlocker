@@ -44,7 +44,7 @@ echo [*] VS: %VSVER% (%MSVC_VER%)
 echo [*] WinSDK: %WINSDK%
 echo [*] Building version.dll...
 
-"%CL_EXE%" /c /O2 /MT /nologo "%SRCDIR%version_hook.c" /Fo:"%OUTDIR%\version_hook.obj"
+"%CL_EXE%" /c /O2 /MT /W4 /nologo "%SRCDIR%version_hook.c" /Fo:"%OUTDIR%\version_hook.obj"
 if errorlevel 1 (
     echo [-] Compile failed
     exit /b 1
@@ -63,7 +63,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-"%LINK_EXE%" /DLL /NOLOGO /VERSION:1.0 /OUT:"%OUTDIR%\version.dll" "%OUTDIR%\version_hook.obj" "%OUTDIR%\version.res" bcrypt.lib user32.lib advapi32.lib ntdll.lib
+"%LINK_EXE%" /DLL /NOLOGO /OUT:"%OUTDIR%\version.dll" "%OUTDIR%\version_hook.obj" "%OUTDIR%\version.res" bcrypt.lib user32.lib advapi32.lib ntdll.lib
 if errorlevel 1 (
     echo [-] Link failed
     exit /b 1

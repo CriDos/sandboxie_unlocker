@@ -42,3 +42,19 @@ jobs:
           path: dist/version.dll
           if-no-files-found: error
           retention-days: 14
+
+  cppcheck:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Cppcheck
+        shell: cmd
+        run: choco install cppcheck -y --no-progress
+
+      - name: Run Cppcheck
+        shell: cmd
+        run: |
+          "C:\Program Files\Cppcheck\cppcheck.exe" --enable=warning,style,performance,portability --std=c11 --platform=win64 --suppress=missingIncludeSystem --inline-suppr --error-exitcode=1 src

@@ -3,13 +3,15 @@
  *
  * Generates a keypair, exports the public key as a 72-byte BCRYPT
  * ECCPUBLIC_BLOB, and signs SHA-256 hashes in raw R||S format (64 bytes).
- * No external dependencies — uses only bcrypt.dll.
+ * No external dependencies - uses only bcrypt.dll.
  */
 #ifndef ECRYPTO_H
 #define ECRYPTO_H
 
 #include <windows.h>
 #include <bcrypt.h>
+#include "log.h"
+#include "fileio.h"
 
 #define BLOB_SIZE       72
 #define SIG_SIZE        64           /* raw R||S */
@@ -96,6 +98,36 @@ static void ec_free_keypair(ec_keypair_t *kp)
     if (kp->hAlg) { BCryptCloseAlgorithmProvider(kp->hAlg, 0); kp->hAlg = NULL; }
 }
 
+/* Restrictive DACL: SYSTEM + Administrators only.  Used for keypair.dat
+ * (private key must not be readable by ordinary users) and for the staged
+ * helper driver file.
+ * *sd and *acl must live in the CALLER's frame: sa->lpSecurityDescriptor
+ * points at *sd and is consumed by CreateFileA after this function returns. */
+static BOOL build_restrictive_sa(SECURITY_ATTRIBUTES *sa,
+                                 SECURITY_DESCRIPTOR *sd, PACL acl, DWORD aclLen)
+{
+    BYTE sysSid[SECURITY_MAX_SID_SIZE], admSid[SECURITY_MAX_SID_SIZE];
+    DWORD sysLen = sizeof(sysSid), admLen = sizeof(admSid);
+
+    if (!InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION))
+        return FALSE;
+    if (!InitializeAcl(acl, aclLen, ACL_REVISION))
+        return FALSE;
+    if (!CreateWellKnownSid(WinLocalSystemSid, NULL, sysSid, &sysLen) ||
+        !CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, admSid, &admLen))
+        return FALSE;
+    if (!AddAccessAllowedAce(acl, ACL_REVISION, GENERIC_ALL, sysSid) ||
+        !AddAccessAllowedAce(acl, ACL_REVISION, GENERIC_ALL, admSid))
+        return FALSE;
+    if (!SetSecurityDescriptorDacl(sd, TRUE, acl, FALSE))
+        return FALSE;
+
+    sa->nLength = sizeof(*sa);
+    sa->lpSecurityDescriptor = sd;
+    sa->bInheritHandle = FALSE;
+    return TRUE;
+}
+
 /* Save keypair to a file (raw BCRYPT_ECCPRIVATE_BLOB) for reuse. */
 static int ec_save_keypair(const ec_keypair_t *kp, const char *path)
 {
@@ -111,9 +143,21 @@ static int ec_save_keypair(const ec_keypair_t *kp, const char *path)
                          blob, blob_len, &blob_len, 0);
     if (st) { HeapFree(GetProcessHeap(), 0, blob); return 3; }
 
-    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, NULL,
+    SECURITY_ATTRIBUTES sa;
+    SECURITY_DESCRIPTOR sd;
+    BYTE aclBuf[512];   /* plenty: 2 ACEs need ~52 bytes */
+    BOOL hasSa = build_restrictive_sa(&sa, &sd, (PACL)aclBuf, (DWORD)sizeof(aclBuf));
+    /* CREATE_ALWAYS keeps the DACL of an existing file - delete it first
+     * so a file left by an older version with a wide-open ACL is not
+     * silently preserved. */
+    if (hasSa) DeleteFileA(path);
+    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, hasSa ? &sa : NULL,
                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) { HeapFree(GetProcessHeap(), 0, blob); return 4; }
+    if (hFile == INVALID_HANDLE_VALUE) {
+        if (hasSa) LOGW("keypair.dat: restrictive DACL failed on create: %lu", GetLastError());
+        HeapFree(GetProcessHeap(), 0, blob);
+        return 4;
+    }
 
     DWORD written;
     BOOL ok = WriteFile(hFile, blob, blob_len, &written, NULL);
@@ -125,31 +169,19 @@ static int ec_save_keypair(const ec_keypair_t *kp, const char *path)
 /* Load keypair from a previously saved private key blob. */
 static int ec_load_keypair(ec_keypair_t *kp, const char *path)
 {
-    HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
-                               OPEN_EXISTING, 0, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) return 1;
-
-    DWORD fileSize = GetFileSize(hFile, NULL);
-    if (!fileSize || fileSize == INVALID_FILE_SIZE) { CloseHandle(hFile); return 2; }
-
-    BYTE *blob = (BYTE *)HeapAlloc(GetProcessHeap(), 0, fileSize);
-    if (!blob) { CloseHandle(hFile); return 3; }
-
-    DWORD bytesRead;
-    if (!ReadFile(hFile, blob, fileSize, &bytesRead, NULL) || bytesRead != fileSize) {
-        HeapFree(GetProcessHeap(), 0, blob);
-        CloseHandle(hFile);
-        return 4;
-    }
-    CloseHandle(hFile);
+    BYTE *blob = NULL;
+    DWORD fileSize = 0;
+    /* A P-256 private blob is ~104 bytes; anything beyond a few KB is
+     * corrupt or hostile - reject before allocating. */
+    if (!read_file_all(path, &blob, &fileSize, 4096)) return 1;
 
     NTSTATUS st = BCryptOpenAlgorithmProvider(&kp->hAlg, L"ECDSA_P256", NULL, 0);
-    if (st) { HeapFree(GetProcessHeap(), 0, blob); return 5; }
+    if (st) { HeapFree(GetProcessHeap(), 0, blob); return 2; }
 
     st = BCryptImportKeyPair(kp->hAlg, NULL, BCRYPT_ECCPRIVATE_BLOB,
                              &kp->hKey, blob, fileSize, 0);
     HeapFree(GetProcessHeap(), 0, blob);
-    if (st) { BCryptCloseAlgorithmProvider(kp->hAlg, 0); kp->hAlg = NULL; return 6; }
+    if (st) { BCryptCloseAlgorithmProvider(kp->hAlg, 0); kp->hAlg = NULL; return 3; }
 
     return 0;
 }

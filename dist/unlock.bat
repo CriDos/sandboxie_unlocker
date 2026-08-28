@@ -73,6 +73,7 @@ echo.
 echo   [6]  Exit
 echo.
 echo ------------------------------------------------------------
+set "choice="
 set /p "choice=Select option [1-6]: "
 
 if "%choice%"=="1" goto install
@@ -182,7 +183,11 @@ for /l %%i in (1,1,15) do (
     )
 )
 :svc_done
-echo    SbieSvc stopped.
+if "!svc_stopped!"=="1" (
+    echo    SbieSvc stopped.
+) else (
+    echo    [-] SbieSvc did not reach STOPPED state in time - continuing.
+)
 
 :: Step 4: Unload SbieDrv via KmdUtil (needs SbieSvc fully stopped so
 :: Api_UseCount == 1, otherwise driver returns STATUS_CONNECTION_IN_USE)

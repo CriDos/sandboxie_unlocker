@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # full history: the release body comes from the tagged commit message
 
       - name: Setup Developer Command Prompt
         uses: ilammy/msvc-dev-cmd@v1
@@ -67,6 +69,21 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "name=sandboxie_unlocker $tag" >> $env:GITHUB_OUTPUT
 
+      - name: Resolve release notes from commit message
+        id: notes
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          git fetch --tags --force origin 2>$null
+          $sha = (git rev-list -n 1 "refs/tags/$tag").Trim()
+          $msg = ((git log -1 --format=%B $sha) -join "`n").Trim()
+          if ([string]::IsNullOrWhiteSpace($msg)) {
+            $msg = "Release $tag"
+          }
+          "body<<RELEASE_BODY_EOF" >> $env:GITHUB_OUTPUT
+          $msg >> $env:GITHUB_OUTPUT
+          "RELEASE_BODY_EOF" >> $env:GITHUB_OUTPUT
+
       - name: Create release zip
         id: zip
         shell: pwsh
@@ -89,6 +106,7 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: ${{ steps.meta.outputs.name }}
+          body: ${{ steps.notes.outputs.body }}
           files: ${{ steps.zip.outputs.zip }}
           generate_release_notes: true
           fail_on_unmatched_files: true

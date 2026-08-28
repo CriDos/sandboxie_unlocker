@@ -15,9 +15,9 @@
 > this to circumvent licensing in any commercial or production deployment.
 > The authors take no responsibility for misuse.
 
-Full kernel-level certificate unlock for Sandboxie-Plus **1.17.x–1.18.x** (tested on 1.17.9, 1.18.0 and 1.18.2) via a single `version.dll` proxy. No test-signing, no files needed in the install directory — everything embedded in one DLL (the driver is staged transiently to `%WINDIR%\Temp`).
+Full kernel-level certificate unlock for Sandboxie-Plus **1.17.x–1.18.x** (tested on 1.17.9, 1.18.0 and 1.18.2) via a single `version.dll` proxy. No test-signing, no files needed in the install directory — everything is embedded in one DLL.
 
-**Windows x64 only.** The embedded kernel R/W driver (`dbutil_2_3.sys`) is 64-bit, and the kernel module enumeration (`kmod.h`) uses x64-specific struct layouts. 32-bit Windows is not supported. Tested on Windows 11 24H2 (Build 26100).
+**Windows x64 only** (the embedded kernel driver is 64-bit and the module enumeration uses x64 struct layouts). Tested on Windows 11 24H2 (Build 26100).
 
 ## How it works
 
@@ -25,50 +25,27 @@ Sandboxie-Plus uses ECDSA P-256 to validate supporter certificates. The public k
 
 This tool replaces the public key in the running kernel with a freshly generated keypair, writes a self-signed `Certificate.dat`, and re-signs all `.exe.sig` files so SandMan's integrity check passes.
 
-### Flow
+1. `version.dll` placed next to `SandMan.exe` — Windows loads it before SandMan initializes, and all 17 exports are forwarded to the real `System32\version.dll` via lazy-resolved function pointers
+2. A background thread stages the embedded driver (Dell-signed `dbutil_2_3.sys`, CVE-2021-21551) to `%WINDIR%\Temp` with a restrictive DACL, loads it as a service, finds `SbieDrv.sys` in the kernel module list and the ECDSA key RVA in the driver image on disk
+3. Generates an ECDSA P-256 keypair via Windows CNG and overwrites the public key in kernel memory
+4. Writes a self-signed `Certificate.dat` (type: ETERNAL, all features), backs up and re-signs all `.exe.sig` files
+5. SandMan reads the certificate from the driver — full unlock
 
-1. `version.dll` placed next to `SandMan.exe` — Windows loads it before SandMan initializes (DLL search order: app directory first)
-2. All 17 `version.dll` exports forwarded to real `System32\version.dll` via lazy-resolved function pointers
-3. Background thread:
-   - Writes embedded kernel driver (`dbutil_2_3.sys`, CVE-2021-21551, Dell-signed) to `%WINDIR%\Temp\sbie_unlock_<pid>.sys` (restrictive DACL — SYSTEM + Administrators only)
-   - Loads driver as a service for kernel R/W access
-   - Finds `SbieDrv.sys` base in kernel via `NtQuerySystemInformation`
-   - Parses `SbieDrv.sys` on disk to find ECDSA key RVA
-   - Generates ECDSA P-256 keypair via Windows CNG (`bcrypt.dll`)
-   - Overwrites public key in kernel memory
-   - Generates `Certificate.dat` (type: ETERNAL, all features)
-   - Backs up and re-signs all `.exe.sig` files
-   - Logs an OS security-state snapshot (vulnerable-driver blocklist flags, Smart App Control, VBS/HVCI, Secure Boot, Driver Verifier, active WDAC policies) so blocked loads can be diagnosed from the log alone
-4. SandMan reads certificate from driver — full unlock
-
-## Building from source
-
-Requires Visual Studio 2022+ Build Tools with C++ workload and Windows SDK 10. `build.bat` auto-detects VS via `vswhere.exe`.
-
-```
-build.bat    # Compiles version_hook.c + version.rc → dist/version.dll
-```
-
-No external dependencies — links against `bcrypt.lib`, `user32.lib`, `advapi32.lib`, `ntdll.lib`. The driver is embedded as a C byte array (`driver_bin.h`).
+At startup the DLL also logs an OS security-state snapshot (vulnerable-driver blocklist flags, Smart App Control, VBS/HVCI, Secure Boot, Driver Verifier, active WDAC policies) to `version_hook.log`, so blocked loads can be diagnosed from the log alone.
 
 ## Usage
 
-End users: download the release zip, extract `version.dll` and `unlock.bat` to the same folder, run `unlock.bat` as administrator. You can also just copy `version.dll` into the Sandboxie-Plus installation folder directly.
+**End users:** download the release zip, extract `version.dll` and `unlock.bat` to the same folder, run `unlock.bat` as administrator, pick **[1] Install Hook**. You can also just copy `version.dll` into the Sandboxie-Plus installation folder directly.
 
-Developers: clone the repo, run `build.bat` to compile (outputs to `dist/`), then run `dist\unlock.bat`.
+**From source:** clone the repo and run `build.bat` (requires VS 2022+ Build Tools with the C++ workload and Windows SDK 10 — auto-detected via `vswhere.exe`). Output lands in `dist/`, then run `dist\unlock.bat`. No external dependencies — links against `bcrypt.lib`, `user32.lib`, `advapi32.lib`, `ntdll.lib`; the driver is embedded as a C byte array (`driver_bin.h`).
 
-```
-build.bat           # Compile version.dll into dist/ (requires VS Build Tools + Windows SDK)
-dist/unlock.bat     # Menu: install / remove / reset safe-fail state / toggle blocklist
-```
+After a reboot the kernel patch is gone — run Install Hook again. The keypair saved in `keypair.dat` is reused, so the certificate and `.sig` files do not need regeneration.
 
-After reboot the kernel patch is lost — run Install Hook again. Keypair saved in `keypair.dat` is reused, so cert and .sig files don't need regeneration.
+## Driver blocklist
 
-## Vulnerable driver blocklist
+Windows 11 22H2+ (including 24H2) ships the **Microsoft Vulnerable Driver Blocklist** enabled by default. It blocks the embedded Dell-signed helper driver (`dbutil_2_3.sys`) at load time with `StartService` error `0x800B010C`, even though the Authenticode signature is valid — the blocklist checks the binary hash, not the signature.
 
-Windows 11 22H2+ (including 24H2) ships the **Microsoft Vulnerable Driver Blocklist** enabled by default. It blocks the embedded Dell-signed helper driver (`dbutil_2_3.sys`, CVE-2021-21551) at load time with `StartService` error `0x800B010C`, even though the Authenticode signature is valid — the blocklist checks the binary hash, not the signature.
-
-To use the unlocker on a machine where the blocklist refuses the driver, disable it:
+To use the unlocker on a machine where the blocklist refuses the driver:
 
 1. Run `dist\unlock.bat` as administrator, option **[4] Disable Vulnerable Driver Blocklist** (or set it manually):
    ```
@@ -77,22 +54,22 @@ To use the unlocker on a machine where the blocklist refuses the driver, disable
 2. **Reboot** — the change only takes effect after a restart.
 3. Run Install Hook ([1]) as usual.
 
-Restore the default protection at any time with option **[5] Enable Vulnerable Driver Blocklist** (also requires a reboot).
+Restore the default protection at any time with option **[5]** (also requires a reboot).
 
 Notes:
 
-- If **Memory Integrity (VBS/HVCI)** is turned on, the blocklist is enforced unconditionally — the registry flag is ignored. In that case disable Memory Integrity first (`Windows Security` → `Device security` → `Core isolation` → `Memory integrity` off, reboot), then disable the blocklist.
-- The flag only governs the vulnerable-driver blocklist; Smart App Control and WDAC policies, if active, are separate and are still reported in `version_hook.log` (the DLL logs the full OS security-state snapshot at unlock start, so a refused load can be diagnosed from the log alone).
+- If **Memory Integrity (VBS/HVCI)** is turned on, the blocklist is enforced unconditionally — the registry flag is ignored. Disable Memory Integrity first (`Windows Security` → `Device security` → `Core isolation` → `Memory integrity` off, reboot), then disable the blocklist.
+- Smart App Control and WDAC policies, if active, are separate mechanisms; their state is reported in `version_hook.log`.
 
-Remove Hook mirrors the official installer stop sequence: kills GUI processes, runs `KmdUtil scandll_silent` to terminate sandboxed processes, stops `SbieSvc` and polls for STOPPED, then unloads `SbieDrv` via `KmdUtil stop SbieDrv` (which calls `API_UNLOAD_DRIVER` — requires `Api_UseCount == 1`, i.e. SbieSvc fully stopped). Restores original `.sig` from `sig_backup/`, deletes generated files, restarts services. SandMan reloads `SbieDrv.sys` with the original key — no reboot required.
+## Removing the hook
+
+Remove Hook mirrors the official installer stop sequence: kills GUI processes, runs `KmdUtil scandll_silent` to terminate sandboxed processes, stops `SbieSvc` and polls for STOPPED, then unloads `SbieDrv` via `KmdUtil stop SbieDrv` (which calls `API_UNLOAD_DRIVER` — requires `Api_UseCount == 1`, i.e. SbieSvc fully stopped). It restores the original `.sig` files from `sig_backup/`, deletes generated files, resets the safe-fail state and restarts services. SandMan reloads `SbieDrv.sys` with the original key — no reboot required.
 
 ## Crash safety
 
-Safe-fail state in `HKCU\SOFTWARE\sandboxie_unlocker` survives reboots. The DLL marks an active unlock attempt before the risky work starts; if the previous attempt was interrupted, the next run increments `fail_count`. After 3 interrupted attempts, the DLL enters safe mode — transparent proxy without kernel unlock.
+Safe-fail state in `HKCU\SOFTWARE\sandboxie_unlocker` survives reboots. The DLL marks an active unlock attempt before the risky work starts; if the previous attempt was interrupted, the next run increments `fail_count`. After 3 interrupted attempts, the DLL enters safe mode — a transparent proxy without kernel unlock.
 
-Controlled failures clear the active marker without incrementing `fail_count`. A successful unlock resets both `attempt_active` and `fail_count`. Manual reset via `unlock.bat` option [3].
-
-For compatibility with hooks installed by v1.0.3 and earlier (where the driver was staged in `version.dll:driver` and could keep the DLL locked), Remove Hook detects a surviving `version.dll` and raises `fail_count` to the safe-mode threshold — the surviving DLL then stays a transparent proxy and does not re-apply the kernel patch. A fresh Install resets `fail_count`; option [3] clears the whole state key.
+Controlled failures clear the active marker without incrementing `fail_count`. A successful unlock resets both values. Remove Hook also raises `fail_count` when it detects a surviving DLL from a v1.0.3-or-earlier hook (legacy ADS staging), forcing it to stay a transparent proxy. Manual reset via `unlock.bat` option [3].
 
 ## Technical details
 
@@ -137,13 +114,13 @@ No SEH in driver — invalid page causes BSOD. Key RVA validated via `ECS1` magi
 
 ```
 sandboxie_unlocker/
-├── dist/              # End-user release (DLL + unlock.bat)
-│   ├── version.dll    # Pre-built, committed to repo
+├── dist/              # unlock.bat + build output
 │   └── unlock.bat     # Install / remove / reset menu
 ├── src/
 │   ├── version_hook.c   # DLL proxy + unlock thread + crash safety
 │   ├── driver_bin.h     # dbutil_2_3.sys as C byte array (embedded, 14840 bytes)
 │   ├── ecrypto.h        # ECDSA P-256 via CNG (bcrypt.dll), keypair save/load
+│   ├── fileio.h         # Read whole file into a heap buffer
 │   ├── kdrv.h           # Kernel R/W via IOCTLs, service management
 │   ├── kmod.h           # NtQuerySystemInformation: kernel module enumeration
 │   ├── pesearch.h       # PE parsing: find key RVA, store original key

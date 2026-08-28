@@ -173,47 +173,36 @@ static void sysg_log_dwords(void)
 
 static void sysg_log_verifier(void)
 {
-    DWORD sz = 0;
+    /* The flat view is capped at ~950 chars anyway, so a fixed buffer
+     * avoids both the allocation and the hostile-size accounting. */
+    char val[950];
+    char flat[950];
+    DWORD got = (DWORD)sizeof(val);
     LSTATUS st = RegGetValueA(HKEY_LOCAL_MACHINE, SYSG_MEMORY_MGMT, "VerifyDrivers",
-                              RRF_RT_REG_MULTI_SZ, NULL, NULL, &sz);
-    if (st != ERROR_SUCCESS || sz == 0) {
+                              RRF_RT_REG_MULTI_SZ, NULL, val, &got);
+    if (st != ERROR_SUCCESS && st != ERROR_MORE_DATA) {
         if (!(st == ERROR_FILE_NOT_FOUND || st == ERROR_PATH_NOT_FOUND))
             LOGW("RegGetValue VerifyDrivers failed: 0x%lX (%lu)", (ULONG)st, (ULONG)st);
         LOGI("Verifier: VerifyDrivers = none");
         return;
     }
-    /* Bound the allocation: the value is diagnostic and the flat view is
-     * capped at 950 chars anyway; a corrupted/hostile size must not turn
-     * into a huge malloc (heap exhaustion in the locked-down context). */
-    if (sz > 1024u * 1024u) sz = 1024u * 1024u;
 
-    char *buf = (char *)HeapAlloc(GetProcessHeap(), 0, sz);
-    if (!buf) { LOGW("Verifier: alloc failed"); return; }
-
-    DWORD got = sz;
-    st = RegGetValueA(HKEY_LOCAL_MACHINE, SYSG_MEMORY_MGMT, "VerifyDrivers",
-                      RRF_RT_REG_MULTI_SZ, NULL, buf, &got);
-    if (st != ERROR_SUCCESS && st != ERROR_MORE_DATA) {
-        LOGW("RegGetValue VerifyDrivers (data) failed: 0x%lX (%lu)", (ULONG)st, (ULONG)st);
-        HeapFree(GetProcessHeap(), 0, buf);
-        LOGI("Verifier: VerifyDrivers = none");
-        return;
-    }
-
-    char flat[950];
-    ULONG f = 0, i;
     int trunc = (st == ERROR_MORE_DATA) ? 1 : 0;
+    /* On ERROR_MORE_DATA RegGetValue reports the size it NEEDED, which is
+     * larger than the buffer - clamp or the scan below reads past the end. */
+    if (got > sizeof(val)) { trunc = 1; got = sizeof(val); }
+
+    ULONG f = 0, i;
     for (i = 0; i + 1 < got; i++) {
-        char c = buf[i];
+        char c = val[i];
         if (c == 0) {
-            if (buf[i + 1] == 0) break;
+            if (val[i + 1] == 0) break;
             c = ' ';
         }
         if (f + 1 >= (ULONG)sizeof(flat)) { trunc = 1; break; }
         flat[f++] = c;
     }
     flat[f] = 0;
-    HeapFree(GetProcessHeap(), 0, buf);
 
     if (!f && !trunc)
         LOGI("Verifier: VerifyDrivers = none");

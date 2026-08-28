@@ -15,7 +15,6 @@
  * All 17 version.dll exports are forwarded to the real System32 version.dll
  * via lazy-resolved function pointers.  No external files needed.
  *
- * Version: 1.0.4
  * Author:  HardTest
  */
 
@@ -23,6 +22,10 @@
 #define _WIN32_WINNT 0x0600
 #endif
 #define WIN32_LEAN_AND_MEAN
+/* C6553 fires inside winreg.h's SAL on every RegOpenKeyExA(..., 0, ...) -
+ * it is SDK-header noise, reported at the header line, so suppress it
+ * globally before the includes. */
+#pragma warning(disable: 6553)
 #include <windows.h>
 #include <winreg.h>
 #include "version.h"
@@ -45,7 +48,7 @@ static void load_real_version(void)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Export wrappers — correct signatures, forward to real version.dll */
+/*  Export wrappers - correct signatures, forward to real version.dll */
 /* ------------------------------------------------------------------ */
 
 typedef BOOL   (WINAPI *fn_GetFileVersionInfoA)(LPCSTR, DWORD, DWORD, LPVOID);
@@ -221,19 +224,36 @@ BOOL WINAPI my_VerQueryValueW(LPCVOID a, LPCWSTR b, LPVOID *c, PUINT d) {
 #define SAFETY_REG_ACTIVE      "attempt_active"
 #define CRASH_LIMIT            3
 
+/* Unlock error codes, in step order. */
+enum {
+    ERR_SBIEDRV_MISSING = 1,  /* SbieDrv.sys not found next to the DLL    */
+    ERR_STAGE,                /* helper driver staging failed             */
+    ERR_NOT_IN_KERNEL,        /* SbieDrv not in kernel module list        */
+    ERR_KEY_RVA,              /* ECS1 key not found in SbieDrv.sys on disk */
+    ERR_KDRV_LOAD,            /* helper driver load failed                */
+    ERR_READ_KEY,             /* kernel read at key VA failed             */
+    ERR_BAD_MAGIC,            /* no ECS1 magic at key VA                  */
+    ERR_KEYGEN,               /* keypair generation failed                */
+    ERR_EXPORT,               /* public blob export failed                */
+    ERR_WRITE_KEY,            /* kernel write at key VA failed            */
+    ERR_VERIFY,               /* write verification failed                */
+    ERR_CERT,                 /* Certificate.dat write failed             */
+};
+
 static volatile LONG g_safety_attempt_owned = 0;
 
 static DWORD safety_read_dword(const char *name, DWORD def)
 {
     HKEY hKey;
-    DWORD val = def, type = 0, sz = sizeof(val);
+    DWORD result = def;
     if (RegOpenKeyExA(HKEY_CURRENT_USER, SAFETY_REGKEY, 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        if (RegQueryValueExA(hKey, name, NULL, &type, (LPBYTE)&val, &sz) != ERROR_SUCCESS ||
-            type != REG_DWORD || sz != sizeof(val))
-            val = def;
+        DWORD val = 0, type = 0, sz = sizeof(val);
+        if (RegQueryValueExA(hKey, name, NULL, &type, (LPBYTE)&val, &sz) == ERROR_SUCCESS &&
+            type == REG_DWORD && sz == sizeof(val))
+            result = val;
         RegCloseKey(hKey);
     }
-    return val;
+    return result;
 }
 
 static void safety_write_dword(const char *name, DWORD val)
@@ -308,45 +328,15 @@ static void get_self_dir(char *out, ULONG cap)
     if (p) *p = 0;
 }
 
-/* Build a SECURITY_ATTRIBUTES with a restrictive DACL: only SYSTEM and
- * Administrators get access.  Prevents same-user (e.g. sandboxed)
- * processes from swapping the staged driver file before the privileged
- * service load. */
-static BOOL build_restrictive_sa(SECURITY_ATTRIBUTES *sa)
-{
-    BYTE svcSid[SECURITY_MAX_SID_SIZE], admSid[SECURITY_MAX_SID_SIZE];
-    DWORD svcLen = sizeof(svcSid), admLen = sizeof(admSid);
-    SECURITY_DESCRIPTOR sd;
-    struct { ULONG64 align; BYTE buf[512]; } aclStor;
-
-    if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION))
-        return FALSE;
-    if (!InitializeAcl((PACL)aclStor.buf, (DWORD)sizeof(aclStor.buf), ACL_REVISION))
-        return FALSE;
-    if (!CreateWellKnownSid(WinLocalSystemSid, NULL, svcSid, &svcLen) ||
-        !CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, admSid, &admLen))
-        return FALSE;
-    if (!AddAccessAllowedAce((PACL)aclStor.buf, ACL_REVISION, GENERIC_ALL, svcSid) ||
-        !AddAccessAllowedAce((PACL)aclStor.buf, ACL_REVISION, GENERIC_ALL, admSid))
-        return FALSE;
-    if (!SetSecurityDescriptorDacl(&sd, TRUE, (PACL)aclStor.buf, FALSE))
-        return FALSE;
-
-    sa->nLength = sizeof(*sa);
-    sa->lpSecurityDescriptor = &sd;
-    sa->bInheritHandle = FALSE;
-    return TRUE;
-}
-
 /* Remove sbie_unlock_*.sys leftovers from previous runs.  Files still
  * image-mapped in the kernel or open by a concurrent instance are
- * skipped — they are picked up again on a later run after reboot.
+ * skipped - they are picked up again on a later run after reboot.
  *
  * Deletion is done by opening with DELETE access and share mode 0:
  * the open fails for any file that is currently held (staging writer,
  * kernel image section), which makes the delete atomic and race-free
  * even across sessions.  Files younger than REUSE_GRACE_SEC are left
- * alone too — they may belong to an instance that staged them but has
+ * alone too - they may belong to an instance that staged them but has
  * not loaded them yet. */
 #define REUSE_GRACE_SEC 30
 
@@ -400,8 +390,12 @@ static void cleanup_stale_temp_drivers(const char *tempDir)
  * verify it on disk.  Returns TRUE and leaves the path in *path. */
 static BOOL write_driver_temp(const char *path)
 {
+    /* SD and ACL must live in THIS frame: sa points into them and
+     * CreateFileA below consumes them while they are alive. */
     SECURITY_ATTRIBUTES sa;
-    if (!build_restrictive_sa(&sa)) {
+    SECURITY_DESCRIPTOR sd;
+    BYTE aclBuf[512];   /* plenty: 2 ACEs need ~52 bytes */
+    if (!build_restrictive_sa(&sa, &sd, (PACL)aclBuf, (DWORD)sizeof(aclBuf))) {
         LOGE("Failed to build restrictive DACL: %lu", GetLastError());
         return FALSE;
     }
@@ -466,7 +460,7 @@ static BOOL extract_driver(char *outPath, ULONG pathCap)
      * still image-mapped: the file is locked by the kernel image section.
      * If the existing content is ours, reuse it. */
     if (kdrv_verify_driver_file(tempPath)) {
-        LOGI("Temp driver locked by live instance, content verified — reusing");
+        LOGI("Temp driver locked by live instance, content verified - reusing");
         strcpy_s(outPath, pathCap, tempPath);
         return TRUE;
     }
@@ -475,12 +469,60 @@ static BOOL extract_driver(char *outPath, ULONG pathCap)
     return FALSE;
 }
 
+/* Steps 6-8 of the unlock: ensure a usable keypair (reuse the saved one
+ * when the kernel is already patched, else generate), write its public
+ * blob over the kernel key, and verify the write.  Returns 0 on success,
+ * an ERR_* code on failure.  On failure *kp is left fully freed. */
+static int patch_kernel_key(kdrv_t *drv, ULONG64 keyVa, BOOL alreadyPatched,
+                            const char *keypairPath, ec_keypair_t *kp)
+{
+    if (alreadyPatched && ec_load_keypair(kp, keypairPath) == 0) {
+        LOGI("Reusing saved keypair from keypair.dat");
+    } else {
+        if (alreadyPatched)
+            LOGW("Keypair load failed (keypair.dat missing/corrupt?) - generating a fresh one");
+        LOGI("Generating new ECDSA P-256 keypair");
+        if (ec_gen_keypair(kp) != 0) {
+            LOGE("ec_gen_keypair failed");
+            return ERR_KEYGEN;
+        }
+        if (ec_save_keypair(kp, keypairPath) != 0) {
+            LOGW("keypair.dat write failed - keypair will not survive a reboot");
+        } else {
+            LOGI("Keypair saved to keypair.dat");
+        }
+    }
+
+    BYTE newBlob[BLOB_SIZE];
+    if (ec_export_pub_blob(kp, newBlob) != 0) {
+        LOGE("ec_export_pub_blob failed");
+        return ERR_EXPORT;
+    }
+    LOGI("New public key blob generated (%d bytes)", BLOB_SIZE);
+
+    if (kdrv_write(drv, keyVa, newBlob, BLOB_SIZE) != 0) {
+        LOGE("kdrv_write failed at key VA");
+        return ERR_WRITE_KEY;
+    }
+    LOGI("Public key written to kernel memory");
+
+    BYTE verifyKey[BLOB_SIZE];
+    if (kdrv_read(drv, keyVa, verifyKey, BLOB_SIZE) != 0 ||
+        memcmp(verifyKey, newBlob, BLOB_SIZE) != 0) {
+        LOGE("Write verification failed");
+        return ERR_VERIFY;
+    }
+    LOGI("Write verified");
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main unlock thread                                                */
 /* ------------------------------------------------------------------ */
 
 static DWORD WINAPI unlock_thread(LPVOID param)
 {
+    (void)param;
     char sbieDir[MAX_PATH];
     char sbieDrvPath[MAX_PATH];
     char keypairPath[MAX_PATH];
@@ -529,16 +571,16 @@ static DWORD WINAPI unlock_thread(LPVOID param)
     strcat_s(sbieDrvPath, MAX_PATH, "\\SbieDrv.sys");
     if (GetFileAttributesA(sbieDrvPath) == INVALID_FILE_ATTRIBUTES) {
         LOGE("SbieDrv.sys not found in %s", sbieDir);
-        err = 1;
+        err = ERR_SBIEDRV_MISSING;
         goto cleanup;
     }
     LOGI("SbieDir: %s", sbieDir);
 
     /* 1. Write driver to staging path (temp file) */
     char driverPath[MAX_PATH];
-    if (!extract_driver(driverPath, MAX_PATH)) { err = 2; goto cleanup; }
+    if (!extract_driver(driverPath, MAX_PATH)) { err = ERR_STAGE; goto cleanup; }
 
-    /* 2. Find SbieDrv.sys base in kernel (retry — driver may not be loaded yet) */
+    /* 2. Find SbieDrv.sys base in kernel (retry - driver may not be loaded yet) */
     ULONG imgSize = 0;
     ULONG64 sbieBase = 0;
     for (int attempt = 0; attempt < 60; attempt++) {
@@ -547,79 +589,42 @@ static DWORD WINAPI unlock_thread(LPVOID param)
         LOGW("SbieDrv.sys not in kernel yet, retry %d/60...", attempt + 1);
         Sleep(1000);
     }
-    if (!sbieBase) { LOGE("SbieDrv.sys not found in kernel after 60 retries"); err = 3; goto cleanup; }
+    if (!sbieBase) { LOGE("SbieDrv.sys not found in kernel after 60 retries"); err = ERR_NOT_IN_KERNEL; goto cleanup; }
     LOGI("SbieDrv.sys kernel base: 0x%llX size: 0x%X", sbieBase, imgSize);
 
     /* 3. Find key RVA from PE on disk */
     ULONG keyRva = pe_find_key_rva(sbieDrvPath);
-    if (!keyRva) { LOGE("ECDSA key not found in SbieDrv.sys on disk"); err = 4; goto cleanup; }
+    if (!keyRva) { LOGE("ECDSA key not found in SbieDrv.sys on disk"); err = ERR_KEY_RVA; goto cleanup; }
     ULONG64 keyVa = sbieBase + keyRva;
     LOGI("Key RVA: 0x%X, kernel VA: 0x%llX", keyRva, keyVa);
 
     /* 4. Load kernel driver for R/W */
     int load_err = kdrv_load(&drv, driverPath);
-    if (load_err != 0) { LOGE("kdrv_load failed: %d", load_err); err = 5; goto cleanup; }
+    if (load_err != 0) { LOGE("kdrv_load failed: %d", load_err); err = ERR_KDRV_LOAD; goto cleanup; }
     LOGI("Kernel driver loaded");
 
     /* 5. Read & validate current key */
-    BYTE currentKey[72];
-    if (kdrv_read(&drv, keyVa, currentKey, 72) != 0) {
+    BYTE currentKey[BLOB_SIZE];
+    if (kdrv_read(&drv, keyVa, currentKey, BLOB_SIZE) != 0) {
         LOGE("kdrv_read failed at key VA");
-        err = 6;
+        err = ERR_READ_KEY;
         goto cleanup;
     }
     if (currentKey[0] != 'E' || currentKey[1] != 'C' ||
         currentKey[2] != 'S' || currentKey[3] != '1') {
         LOGE("No ECS1 magic at key VA");
-        err = 7;
+        err = ERR_BAD_MAGIC;
         goto cleanup;
     }
-    BOOL alreadyPatched = (memcmp(currentKey, ORIGINAL_KEY, 72) != 0);
+    BOOL alreadyPatched = (memcmp(currentKey, ORIGINAL_KEY, BLOB_SIZE) != 0);
     LOGI("Current key: %s", alreadyPatched ? "already patched" : "original");
 
-    /* 6. Load or generate keypair */
+    /* 6-8. Keypair + kernel patch + verify */
     strcpy_s(keypairPath, MAX_PATH, sbieDir);
     strcat_s(keypairPath, MAX_PATH, "\\keypair.dat");
-
-    if (alreadyPatched && ec_load_keypair(&kp, keypairPath) == 0) {
-        LOGI("Reusing saved keypair from keypair.dat");
-    } else {
-        LOGI("Generating new ECDSA P-256 keypair");
-        if (ec_gen_keypair(&kp) != 0) {
-            LOGE("ec_gen_keypair failed");
-            err = 8;
-            goto cleanup;
-        }
-        ec_save_keypair(&kp, keypairPath);
-        LOGI("Keypair saved to keypair.dat");
-    }
+    err = patch_kernel_key(&drv, keyVa, alreadyPatched, keypairPath, &kp);
+    if (err) { ec_free_keypair(&kp); goto cleanup; }
     kp_valid = TRUE;
-
-    /* 7. Export & overwrite public key in kernel */
-    BYTE newBlob[72];
-    if (ec_export_pub_blob(&kp, newBlob) != 0) {
-        LOGE("ec_export_pub_blob failed");
-        err = 9;
-        goto cleanup;
-    }
-    LOGI("New public key blob generated (72 bytes)");
-
-    if (kdrv_write(&drv, keyVa, newBlob, 72) != 0) {
-        LOGE("kdrv_write failed at key VA");
-        err = 10;
-        goto cleanup;
-    }
-    LOGI("Public key written to kernel memory");
-
-    /* 8. Verify write */
-    BYTE verifyKey[72];
-    if (kdrv_read(&drv, keyVa, verifyKey, 72) != 0 ||
-        memcmp(verifyKey, newBlob, 72) != 0) {
-        LOGE("Write verification failed");
-        err = 11;
-        goto cleanup;
-    }
-    LOGI("Write verified");
 
     /* 9. Unload driver (close handles only) */
     kdrv_unload(&drv);
@@ -632,10 +637,10 @@ static DWORD WINAPI unlock_thread(LPVOID param)
     LOGI(".sig backup done");
 
     /* 11. Write Certificate.dat.  A missing cert after a kernel patch means
-     * SandMan still enforces the kill-timer — do NOT report success. */
+     * SandMan still enforces the kill-timer - do NOT report success. */
     if (cert_write(sbieDir, &kp) != 0) {
         LOGE("cert_write failed");
-        err = 12;
+        err = ERR_CERT;
         goto cleanup;
     }
     LOGI("Certificate.dat written");
@@ -649,12 +654,12 @@ static DWORD WINAPI unlock_thread(LPVOID param)
 
 cleanup:
     if (kp_valid) ec_free_keypair(&kp);
-    /* Unload driver if still loaded (goto from steps 7-8) */
+    /* Unload driver if still loaded (gotos from steps 5-8) */
     if (drv.hDev || drv.hSvc || drv.hScm) kdrv_unload(&drv);
     if (attempt_started) safety_finish_failure();
     if (mutex_owned) ReleaseMutex(hMutex);
     if (hMutex) CloseHandle(hMutex);
-    if (err) LOGE("unlock failed at step %d", err);
+    if (err) LOGE("unlock failed: code %d", err);
     return err;
 }
 
@@ -664,6 +669,7 @@ cleanup:
 
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
 {
+    (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hinst);
         load_real_version();
