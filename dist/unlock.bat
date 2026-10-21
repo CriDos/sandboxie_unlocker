@@ -138,16 +138,44 @@ echo                    REMOVE HOOK
 echo ============================================================
 echo.
 
+:: A missing version.dll is not "nothing to do": an earlier session may
+:: have left keypair.dat, Certificate.dat and moved-aside vendor .sig
+:: files.  Without cleanup the next boot shows the certificate/signature
+:: dialogs and no installed DLL is left to put them back.  The kernel
+:: patch itself dies on reboot.
+if exist "%SBIE_DIR%\version.dll" goto :remove_run
+if exist "%SBIE_DIR%\*.sig.vendor" goto :remove_stray
+if exist "%SBIE_DIR%\keypair.dat" goto :remove_stray
+echo    version.dll not found - hook is not installed.
+echo.
+pause
+goto menu
+
+:remove_stray
+echo    version.dll is gone, but files from an earlier hook remain.
+:: The shadows were moved aside by the hook, so the names are ours; the
+:: vendor bytes cannot be re-verified without the DLL - a corrupt one is
+:: no worse than the mismatched .sig it replaces.
+for %%f in ("%SBIE_DIR%\*.sig.vendor") do move /Y "%%f" "%%~dpnf" >nul 2>&1
+if exist "%SBIE_DIR%\keypair.dat" del /f /q "%SBIE_DIR%\Certificate.dat" >nul 2>&1
+del /f /q "%SBIE_DIR%\keypair.dat" >nul 2>&1
+del /f /q "%SBIE_DIR%\unlock.boot" >nul 2>&1
+del /f /q "%SBIE_DIR%\version_hook.log" >nul 2>&1
+del /f /q "%SBIE_DIR%\version_hook.old.log" >nul 2>&1
+reg delete "HKCU\SOFTWARE\sandboxie_unlocker" /f >nul 2>&1
+echo    Vendor .sig files renamed back, generated files removed.
+echo    Reboot to drop a kernel patch left by the previous session.
+echo    If SandMan still reports an invalid signature, run the
+echo    Sandboxie-Plus installer once ^(repair^).
+echo.
+pause
+goto menu
+
+:remove_run
 :: === Staging artifacts need the stop sequence above ===
 :: A live DLL may be between writing the temp driver and loading it;
 :: deleting the file inside that window breaks the load.  After the
 :: stop sequence no unlock thread is running.
-if not exist "%SBIE_DIR%\version.dll" (
-    echo    version.dll not found - hook is not installed.
-    echo.
-    pause
-    goto menu
-)
 
 set "reboot_required=0"
 set "dll_locked=0"
@@ -222,6 +250,34 @@ del /f /q "%WINDIR%\Temp\sbie_unlock_*.sys" >nul 2>&1
 :: (mark-for-delete), so this is safe.
 for /f "tokens=2" %%s in ('sc query type^=^ driver state^=^ all ^| findstr /c:"SERVICE_NAME: sbie_unlock"') do sc delete "%%s" >nul 2>&1
 
+:: Restore the vendor .sig files through the DLL: it owns the signature
+:: checks and puts back exactly what it moved aside at unlock time.  This
+:: runs BEFORE version.dll is deleted - the DLL is the tool doing it.
+set "sig_failed=0"
+if not exist "%SBIE_DIR%\version.dll" goto :sig_restore_broken
+echo    Restoring original .sig files...
+del /f /q "%SBIE_DIR%\sig_restore.status" >nul 2>&1
+rundll32 "%SBIE_DIR%\version.dll",RestoreVendorSigs
+set "SIG_STATUS="
+if exist "%SBIE_DIR%\sig_restore.status" set /p SIG_STATUS=<"%SBIE_DIR%\sig_restore.status"
+del /f /q "%SBIE_DIR%\sig_restore.status" >nul 2>&1
+if not defined SIG_STATUS goto :sig_restore_broken
+echo    !SIG_STATUS!
+echo !SIG_STATUS! | find "failed=0" >nul
+if errorlevel 1 goto :sig_restore_broken
+goto :sig_restore_done
+
+:sig_restore_broken
+set "sig_failed=1"
+echo    [^^!] NOT all vendor signatures were restored.
+echo        Run the Sandboxie-Plus installer once ^(repair^) to bring
+echo        the vendor files back.
+if "!drv_stopped!"=="0" (
+    echo        Do NOT start SandMan before the reboot either - the running
+    echo        driver still holds the hook's key.
+)
+:sig_restore_done
+
 :: === Delete version.dll with retry ===
 set "DLL_TARGET=%SBIE_DIR%\version.dll"
 set "deleted=0"
@@ -249,38 +305,42 @@ if "!deleted!"=="1" (
     echo        Close all Sandboxie processes, reboot, and run Remove Hook again.
 )
 
-:: Restore original .sig files from backup.  The backup is kept when the
-:: copy fails, otherwise removal would destroy the only good copies.
-if exist "%SBIE_DIR%\sig_backup" (
-    echo    Restoring original .sig files...
-    copy /Y "%SBIE_DIR%\sig_backup\*.sig" "%SBIE_DIR%\" >nul 2>&1
-    if errorlevel 1 (
-        set "reboot_required=1"
-        echo    [-] Could not restore - backups kept in sig_backup.
-    ) else (
-        rmdir /s /q "%SBIE_DIR%\sig_backup" >nul 2>&1
-        echo    Done.
-    )
-)
 
-:: Clean up generated files
-del /f /q "%SBIE_DIR%\Certificate.dat"   >nul 2>&1
-del /f /q "%SBIE_DIR%\keypair.dat"       >nul 2>&1
+:: Clean up generated files.  Certificate.dat is only ours when the hook
+:: generated a keypair next to it - a certificate the user installed
+:: themselves (a paid licence) must survive Remove Hook.
+if exist "%SBIE_DIR%\keypair.dat" del /f /q "%SBIE_DIR%\Certificate.dat" >nul 2>&1
+del /f /q "%SBIE_DIR%\keypair.dat" >nul 2>&1
+del /f /q "%SBIE_DIR%\unlock.boot" >nul 2>&1
 del /f /q "%SBIE_DIR%\version_hook.log"  >nul 2>&1
 del /f /q "%SBIE_DIR%\version_hook.old.log" >nul 2>&1
+:: sig_backup/ belongs to the older copy-based policy and is never used now.
+rmdir /s /q "%SBIE_DIR%\sig_backup" >nul 2>&1
 
 :: Reset safe-fail state
 reg delete "HKCU\SOFTWARE\sandboxie_unlocker" /f >nul 2>&1
 echo    Reset safe-fail state
 
-:: Compatibility with older hooks: they staged the helper driver as an
-:: alternate data stream of version.dll, so a version.dll that cannot be
-:: deleted usually still holds a mapped driver.  Raise the crash counter to
-:: the safe-mode threshold - a surviving DLL then stays a transparent proxy
-:: and never loads the driver or re-arms the kernel patch.
-if "!dll_locked!"=="1" (
-    reg add "HKCU\SOFTWARE\sandboxie_unlocker" /v fail_count /t REG_DWORD /d 3 /f >nul 2>&1
-    echo    Raised fail_count - surviving DLL will stay in safe mode.
+:: Code Integrity keeps a per-file verdict from the patched load: after the
+:: driver has been unloaded, StartService fails with 577 (ERROR_INVALID_
+:: IMAGE_HASH) until the file is replaced.  Writing the same bytes back
+:: gives the file a new id and clears that verdict - exactly what the
+:: Sandboxie installer's repair does, without reinstalling anything.
+if "!drv_stopped!"=="1" (
+    copy /Y "%SBIE_DIR%\SbieDrv.sys" "%SBIE_DIR%\SbieDrv.sys.new" >nul 2>&1
+    if errorlevel 1 (
+        set "reboot_required=1"
+        echo    [-] Cannot stage SbieDrv.sys - the driver is still loaded.
+    ) else (
+        move /Y "%SBIE_DIR%\SbieDrv.sys.new" "%SBIE_DIR%\SbieDrv.sys" >nul 2>&1
+        if errorlevel 1 (
+            del /f /q "%SBIE_DIR%\SbieDrv.sys.new" >nul 2>&1
+            set "reboot_required=1"
+            echo    [-] Cannot replace SbieDrv.sys - the driver is still loaded.
+        ) else (
+            echo    SbieDrv.sys rewritten ^(Code Integrity verdict cleared^).
+        )
+    )
 )
 
 echo.
@@ -290,22 +350,54 @@ if "!reboot_required!"=="0" (
     echo    Restarting Sandboxie-Plus with original key...
     sc.exe start SbieSvc >nul 2>&1
     timeout /t 2 /nobreak >nul
-    start "" "%SBIE_DIR%\SandMan.exe"
-    echo [+] Hook removed. SandMan restarted.
+    rem The rewrite above clears the Code Integrity verdict in almost every
+    rem case; if the driver still refuses to start, only a reboot or the
+    rem installer can help - say so instead of leaving a dead install.
+    sc.exe query SbieDrv 2>nul | find "RUNNING" >nul 2>&1
+    if errorlevel 1 (
+        if exist "%KMDUTIL%" "%KMDUTIL%" start SbieDrv >nul 2>&1
+        timeout /t 2 /nobreak >nul
+        sc.exe query SbieDrv 2>nul | find "RUNNING" >nul 2>&1
+    )
+    if errorlevel 1 (
+        set "reboot_required=1"
+        echo.
+        echo    [^^!] SbieDrv did not start again - Windows Code Integrity refused it.
+        echo        Reboot, then start SandMan.  If it still fails, run the
+        echo        Sandboxie-Plus installer once ^(repair^).
+        echo.
+    ) else (
+        if "!sig_failed!"=="1" (
+            echo.
+            echo    [^^!] SandMan was NOT started: some .sig files are still ours.
+            echo        Run the Sandboxie-Plus installer once ^(repair^), then start SandMan.
+        ) else (
+            start "" "%SBIE_DIR%\SandMan.exe"
+            echo [+] Hook removed. SandMan restarted.
+        )
+    )
 ) else (
     echo    [^^!] REBOOT REQUIRED
     if not "!drv_stopped!"=="1" (
         echo    SbieDrv could not be unloaded and will unload on reboot.
+        echo    Do NOT start SandMan before the reboot: the running driver
+        echo    still holds the hook's key and SandMan would report an
+        echo    invalid signature.
     )
     if "!dll_locked!"=="1" (
         echo    version.dll is still locked - after reboot, run Remove Hook again to delete it.
     )
-    if exist "%SBIE_DIR%\sig_backup" (
-        echo    Original .sig files are still in sig_backup - copy them back after reboot.
+    if "!sig_failed!"=="1" (
+        echo    Original .sig files were NOT fully restored - run the
+        echo    installer repair before using Sandboxie again.
     ) else (
         echo    Original .sig files have been restored.
     )
-    echo    After reboot, Sandboxie-Plus works normally.
+    if "!sig_failed!"=="1" (
+        echo    After reboot, run the installer repair, then SandMan works normally.
+    ) else (
+        echo    After reboot, Sandboxie-Plus works normally.
+    )
     echo.
     echo [+] Please reboot to complete removal.
 )

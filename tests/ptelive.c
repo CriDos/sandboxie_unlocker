@@ -37,19 +37,18 @@ static BOOL stage_and_load(kdrv_t *drv)
     CreateDirectoryA(dir, NULL);
 
     char path[MAX_PATH];
-    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\sbie_ptelive_%lu.sys",
-                dir, GetCurrentProcessId());
+    _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\sbie_ptelive_%lu.sys", dir,
+                GetCurrentProcessId());
 
     DeleteFileA(path);
-    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h =
+        CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
         printf("staging CreateFile failed: %lu\n", GetLastError());
         return FALSE;
     }
     DWORD written = 0;
-    BOOL ok = WriteFile(h, g_driver_bin, g_driver_size, &written, NULL) &&
-              written == g_driver_size;
+    BOOL ok = WriteFile(h, g_driver_bin, g_driver_size, &written, NULL) && written == g_driver_size;
     CloseHandle(h);
     if (!ok) {
         printf("staging WriteFile failed\n");
@@ -97,9 +96,11 @@ int main(void)
     printf("[PASS] PTE base located and validated: 0x%llX\n", base);
 
     /* 1. A writable page must take the direct path. */
-    BYTE *rw = (BYTE *)VirtualAlloc(NULL, 0x1000, MEM_RESERVE | MEM_COMMIT,
-                                    PAGE_READWRITE);
-    if (!rw) { kdrv_unload(&drv); return fail("VirtualAlloc (rw page)"); }
+    BYTE *rw = (BYTE *)VirtualAlloc(NULL, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!rw) {
+        kdrv_unload(&drv);
+        return fail("VirtualAlloc (rw page)");
+    }
     memcpy(rw, "AAAAAAAA", 8);
     static const char marker[] = "DIRECT!!";
     int rc = kdrv_page_write(&drv, (ULONG64)(ULONG_PTR)rw, marker, 8);
@@ -113,9 +114,11 @@ int main(void)
 
     /* 2. A read-only page must be written through the alias - this is the
      * exact operation that bugchecked SbieDrv 1.18.7's .rdata key page. */
-    BYTE *ro = (BYTE *)VirtualAlloc(NULL, 0x1000, MEM_RESERVE | MEM_COMMIT,
-                                    PAGE_READWRITE);
-    if (!ro) { kdrv_unload(&drv); return fail("VirtualAlloc (ro page)"); }
+    BYTE *ro = (BYTE *)VirtualAlloc(NULL, 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!ro) {
+        kdrv_unload(&drv);
+        return fail("VirtualAlloc (ro page)");
+    }
     memset(ro, 'A', 0x1000);
     DWORD old = 0;
     if (!VirtualProtect(ro, 0x1000, PAGE_READONLY, &old)) {
@@ -133,8 +136,7 @@ int main(void)
     BOOL patched = (memcmp(ro, newkey, 8) == 0);
 
     printf("%s read-only page write: rc=%d patched=%d protection still RO=%d\n",
-           (rc == 0 && patched && still_ro) ? "[PASS]" : "[FAIL]",
-           rc, patched, still_ro);
+           (rc == 0 && patched && still_ro) ? "[PASS]" : "[FAIL]", rc, patched, still_ro);
     if (rc != 0 || !patched || !still_ro) {
         printf("      (the same operation on SbieDrv's key page is what "
                "bugchecked 0xBE before this change)\n");
@@ -145,8 +147,8 @@ int main(void)
     BOOL user_store_faults = FALSE;
     __try {
         ro[0] = 'X';
-    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
-                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                                 : EXCEPTION_CONTINUE_SEARCH) {
         user_store_faults = TRUE;
     }
     printf("[%s] page stayed read-only for user code (store faulted: %d)\n",

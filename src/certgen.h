@@ -20,20 +20,17 @@
  *   opts  = opt_sec + opt_enc + opt_net + opt_desk
  *   expiration = -1 (never expires)
  */
-static const char *CERT_TAGS[] = {
-    "NAME: HardTest",
-    "DATE: 25.06.2026",
-    "TYPE: ETERNAL",
-    "SOFTWARE: Sandboxie-Plus",
-    "OPTIONS: SBOX,EBOX,NETI,DESK",
-    NULL
-};
+static const char *CERT_TAGS[] = {"NAME: HardTest",
+                                  "DATE: 25.06.2026",
+                                  "TYPE: ETERNAL",
+                                  "SOFTWARE: Sandboxie-Plus",
+                                  "OPTIONS: SBOX,EBOX,NETI,DESK",
+                                  NULL};
 
 /* SHA-256 a file. Returns 0 on success, writes 32 bytes into out. */
 static int sha256_file(const char *path, BYTE *out)
 {
-    HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ,
-                               NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         LOGE("sha256_file: open failed: %lu path=%s", GetLastError(), path);
         return 1;
@@ -62,12 +59,15 @@ static int sha256_file(const char *path, BYTE *out)
     for (;;) {
         if (!ReadFile(hFile, buf, sizeof(buf), &bytesRead, NULL)) {
             readOk = FALSE;
-            readErr = GetLastError();  /* capture now - BCrypt/CloseHandle calls below clobber it */
+            readErr = GetLastError(); /* capture now - BCrypt/CloseHandle calls below clobber it */
             break;
         }
         if (bytesRead == 0) break;
         hashSt = BCryptHashData(hHash, buf, bytesRead, 0);
-        if (hashSt) { hashOk = FALSE; break; }
+        if (hashSt) {
+            hashOk = FALSE;
+            break;
+        }
     }
 
     NTSTATUS finSt = BCryptFinishHash(hHash, out, 32, 0);
@@ -76,9 +76,18 @@ static int sha256_file(const char *path, BYTE *out)
     CloseHandle(hFile);
     /* An unfed hash still finishes cleanly, so each failure class keeps
      * its own diagnosis: finish, hash feed, then file read. */
-    if (finSt) { LOGE("sha256_file: BCryptFinishHash failed: 0x%lX", (unsigned long)finSt); return 6; }
-    if (!hashOk) { LOGE("sha256_file: BCryptHashData failed: 0x%lX", (unsigned long)hashSt); return 6; }
-    if (!readOk) { LOGE("sha256_file: ReadFile failed: %lu path=%s", readErr, path); return 5; }
+    if (finSt) {
+        LOGE("sha256_file: BCryptFinishHash failed: 0x%lX", (unsigned long)finSt);
+        return 6;
+    }
+    if (!hashOk) {
+        LOGE("sha256_file: BCryptHashData failed: 0x%lX", (unsigned long)hashSt);
+        return 6;
+    }
+    if (!readOk) {
+        LOGE("sha256_file: ReadFile failed: %lu path=%s", readErr, path);
+        return 5;
+    }
     return 0;
 }
 
@@ -89,7 +98,10 @@ static int cert_hash_body(BYTE *out32)
 {
     BCRYPT_ALG_HANDLE hAlg = NULL;
     BCRYPT_HASH_HANDLE hHash = NULL;
-    if (BCryptOpenAlgorithmProvider(&hAlg, L"SHA256", NULL, 0)) { memset(out32, 0, 32); return 1; }
+    if (BCryptOpenAlgorithmProvider(&hAlg, L"SHA256", NULL, 0)) {
+        memset(out32, 0, 32);
+        return 1;
+    }
     if (BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0)) {
         BCryptCloseAlgorithmProvider(hAlg, 0);
         memset(out32, 0, 32);
@@ -111,8 +123,7 @@ static int cert_hash_body(BYTE *out32)
         }
     }
 
-    if (!r && BCryptFinishHash(hHash, out32, 32, 0))
-        r = 4;
+    if (!r && BCryptFinishHash(hHash, out32, 32, 0)) r = 4;
 
     BCryptDestroyHash(hHash);
     BCryptCloseAlgorithmProvider(hAlg, 0);
@@ -124,15 +135,24 @@ static int cert_hash_body(BYTE *out32)
 static int cert_write(const char *sbie_dir, const ec_keypair_t *kp)
 {
     BYTE hash[32];
-    if (cert_hash_body(hash)) { LOGE("cert_hash_body failed"); return 5; }
+    if (cert_hash_body(hash)) {
+        LOGE("cert_hash_body failed");
+        return 5;
+    }
 
     BYTE sig[64];
     int r = ec_sign_hash(kp, hash, sig);
-    if (r) { LOGE("ec_sign_hash failed: %d", r); return 1; }
+    if (r) {
+        LOGE("ec_sign_hash failed: %d", r);
+        return 1;
+    }
 
     char sig_b64[256];
     r = ec_base64_encode(sig, 64, sig_b64, sizeof(sig_b64));
-    if (r) { LOGE("ec_base64_encode failed: %d", r); return 2; }
+    if (r) {
+        LOGE("ec_base64_encode failed: %d", r);
+        return 2;
+    }
 
     char content[2048];
     content[0] = 0;
@@ -148,8 +168,8 @@ static int cert_write(const char *sbie_dir, const ec_keypair_t *kp)
     strcpy_s(path, MAX_PATH, sbie_dir);
     strcat_s(path, MAX_PATH, "\\Certificate.dat");
 
-    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, NULL,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile =
+        CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         LOGE("CreateFile failed: %lu path=%s", GetLastError(), path);
         return 3;
@@ -157,7 +177,7 @@ static int cert_write(const char *sbie_dir, const ec_keypair_t *kp)
 
     DWORD written = 0;
     BOOL ok = WriteFile(hFile, content, (DWORD)strlen(content), &written, NULL);
-    DWORD werr = GetLastError();   /* capture before CloseHandle clobbers it */
+    DWORD werr = GetLastError(); /* capture before CloseHandle clobbers it */
     CloseHandle(hFile);
     if (!ok || written != (DWORD)strlen(content)) {
         LOGE("cert_write: WriteFile failed: %lu written=%lu", werr, written);
@@ -166,39 +186,9 @@ static int cert_write(const char *sbie_dir, const ec_keypair_t *kp)
     return 0;
 }
 
-/* Re-sign a single .exe.sig file.  .sig = 64-byte raw ECDSA of SHA-256(exe).
- * Returns 0 on success; failures are logged. */
-static int cert_resign_one(const char *exe_path, const char *sig_path,
-                           const ec_keypair_t *kp)
-{
-    BYTE hash[32];
-    if (sha256_file(exe_path, hash) != 0) return 1;
-
-    BYTE sig[64];
-    if (ec_sign_hash(kp, hash, sig) != 0) { LOGE("resign: ec_sign_hash failed: %s", exe_path); return 2; }
-
-    HANDLE hSig = CreateFileA(sig_path, GENERIC_WRITE, 0, NULL,
-                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hSig == INVALID_HANDLE_VALUE) {
-        LOGE("resign: create %s failed: %lu", sig_path, GetLastError());
-        return 3;
-    }
-
-    DWORD written = 0;
-    BOOL ok = WriteFile(hSig, sig, 64, &written, NULL);
-    DWORD werr = GetLastError();   /* capture before CloseHandle clobbers it */
-    CloseHandle(hSig);
-    if (!ok || written != 64) {
-        LOGE("resign: write %s failed: %lu", sig_path, werr);
-        return 4;
-    }
-    return 0;
-}
-
 /* Does *sig_path* hold the vendor signature for *exe_path*, verified with
  * *trusted_pub*?  Returns 1 (valid), 0 (not this key) or -1 (unreadable). */
-static int cert_sig_is_vendor(const char *exe_path, const char *sig_path,
-                              const BYTE *trusted_pub)
+static int cert_sig_is_vendor(const char *exe_path, const char *sig_path, const BYTE *trusted_pub)
 {
     BYTE hash[32];
     if (sha256_file(exe_path, hash) != 0) return -1;
@@ -215,127 +205,244 @@ static int cert_sig_is_vendor(const char *exe_path, const char *sig_path,
     return ok;
 }
 
-/* Backup original .sig files.
- *
- * A backup is only useful when it holds the *vendor* signature of the
- * installed executables: "copy once and never look again" kept a stale
- * backup alive across a Sandboxie update, and restoring it afterwards
- * left .exe and .sig mismatched.  So:
- *   - the installed .sig verifies under *trusted_pub* (fresh install or
- *     reinstall/repair): refresh the backup, stale or not;
- *   - it does not: the installed pair is already our re-signed one (or
- *     something else) - keep an existing valid backup, and say loudly
- *     when there is none or when the one we have does not match the
- *     installed executable (only a Sandboxie repair can fix that).
- * The trusted key is a parameter so the policy is testable without the
- * vendor's private key. */
-static void cert_backup_sigs_ex(const char *sbie_dir, const char *backup_dir,
-                                const BYTE *trusted_pub)
+/* ------------------------------------------------------------------ */
+/*  Vendor signature shadows                                          */
+/* ------------------------------------------------------------------ */
+
+/* The vendor .sig is never overwritten: ReplaceFile swaps our signature in
+ * and moves the vendor one to X.sig.vendor, so removal is a rename back.
+ * No copy policy, no marker, no backup directory - nothing to poison, and
+ * nothing that depends on the order the files happen to be seen in. */
+#define SHADOW_SUFFIX ".vendor"
+
+static void sig_join(char *out, const char *dir, const char *name)
+{ _snprintf_s(out, MAX_PATH, _TRUNCATE, "%s\\%s", dir, name); }
+
+/* Cut *suffix_len* characters off *path*; "" when nothing would remain. */
+static void sig_strip(char *path, size_t suffix_len)
 {
-    if (!CreateDirectoryA(backup_dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
-        LOGW("sig backup: CreateDirectoryA failed: %lu - originals will be lost on re-sign", GetLastError());
-        return;
+    size_t len = strlen(path);
+    if (len > suffix_len)
+        path[len - suffix_len] = 0;
+    else
+        path[0] = 0;
+}
+
+/* "X.exe.sig" in *dir* -> "X.exe"; "" when the name is too short. */
+static void sig_exe_path(char *out, const char *dir, const char *sig_name)
+{
+    sig_join(out, dir, sig_name);
+    sig_strip(out, 4);
+}
+
+/* Vendor shadow of a .sig path: "X.exe.sig" -> "X.exe.sig.vendor". */
+static void sig_shadow_path(char *out, const char *sig_path)
+{ _snprintf_s(out, MAX_PATH, _TRUNCATE, "%s" SHADOW_SUFFIX, sig_path); }
+
+/* Replace *path* with *data* in one step; the previous file ends up at
+ * *backup* (NULL to drop it).  Returns 0 on success. */
+static int replace_with_data(const char *path, const BYTE *data, DWORD size, const char *backup)
+{
+    char tmp[MAX_PATH];
+    _snprintf_s(tmp, MAX_PATH, _TRUNCATE, "%s.tmp", path);
+
+    HANDLE hFile =
+        CreateFileA(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        LOGE("sig: cannot create %s: %lu", tmp, GetLastError());
+        return 1;
+    }
+    DWORD written = 0;
+    BOOL ok = WriteFile(hFile, data, size, &written, NULL);
+    DWORD werr = GetLastError();
+    CloseHandle(hFile);
+    if (!ok || written != size) {
+        LOGE("sig: cannot write %s: %lu", tmp, werr);
+        DeleteFileA(tmp);
+        return 2;
     }
 
-    char pattern[MAX_PATH];
-    strcpy_s(pattern, MAX_PATH, sbie_dir);
-    strcat_s(pattern, MAX_PATH, "\\*.exe.sig");
+    if (ReplaceFileA(path, tmp, backup, REPLACEFILE_IGNORE_MERGE_ERRORS, NULL, NULL)) return 0;
 
-    WIN32_FIND_DATAA fd;
-    HANDLE hFind = FindFirstFileA(pattern, &fd);
-    if (hFind == INVALID_HANDLE_VALUE) return;
-
-    int refreshed = 0, kept = 0, warned = 0;
-
-    do {
-        char src[MAX_PATH], dst[MAX_PATH], exe[MAX_PATH];
-        strcpy_s(src, MAX_PATH, sbie_dir);
-        strcat_s(src, MAX_PATH, "\\");
-        strcat_s(src, MAX_PATH, fd.cFileName);
-        strcpy_s(dst, MAX_PATH, backup_dir);
-        strcat_s(dst, MAX_PATH, "\\");
-        strcat_s(dst, MAX_PATH, fd.cFileName);
-
-        strcpy_s(exe, MAX_PATH, sbie_dir);
-        strcat_s(exe, MAX_PATH, "\\");
-        size_t nameLen = strlen(fd.cFileName);
-        if (nameLen > 4)
-            strncat_s(exe, MAX_PATH, fd.cFileName, nameLen - 4);
-
-        int vendor_now = cert_sig_is_vendor(exe, src, trusted_pub);
-        BOOL have_backup = (GetFileAttributesA(dst) != INVALID_FILE_ATTRIBUTES);
-
-        if (vendor_now == 1) {
-            if (!CopyFileA(src, dst, FALSE)) {
-                LOGW("sig backup: refresh failed: %s -> %s err=%lu", src, dst, GetLastError());
-                warned++;
-            } else {
-                refreshed++;
-            }
-        } else if (!have_backup) {
-            /* Copying it would only preserve our own signature, which can
-             * never verify against the vendor key - warn instead. */
-            LOGW("sig backup: %s is not vendor-signed and had no backup - removing the "
-                 "hook cannot restore it, repair Sandboxie to refresh", fd.cFileName);
-            warned++;
-        } else if (cert_sig_is_vendor(exe, dst, trusted_pub) != 1) {
-            LOGW("sig backup: %s does not match %s - stale after a Sandboxie update; "
-                 "removing the hook would restore a mismatched .sig, repair Sandboxie first",
-                 fd.cFileName, fd.cFileName);
-            warned++;
-        } else {
-            kept++;   /* valid vendor backup already in place */
-        }
-    } while (FindNextFileA(hFind, &fd));
-
-    FindClose(hFind);
-
-    if (refreshed || kept || warned)
-        LOGI("sig backup: refreshed %d, kept %d, warnings %d", refreshed, kept, warned);
+    LOGE("sig: cannot replace %s: %lu", path, GetLastError());
+    DeleteFileA(tmp);
+    return 3;
 }
 
-/* Production policy: the vendor key of this SbieDrv generation. */
-static void cert_backup_sigs(const char *sbie_dir, const char *backup_dir)
+/* Sign *exe_path* into *sig_path*, moving a vendor signature aside first.
+ * Returns 0 when our signature is in place and the vendor one is
+ * restorable; 4 when the vendor signature is gone and must not be touched
+ * (leaving the file alone beats replacing it with something unremovable). */
+static int sign_with_shadow(const char *exe_path, const char *sig_path, const ec_keypair_t *kp,
+                            const BYTE *trusted_pub)
 {
-    cert_backup_sigs_ex(sbie_dir, backup_dir, ORIGINAL_KEY);
+    char shadow[MAX_PATH];
+    sig_shadow_path(shadow, sig_path);
+
+    BYTE hash[32];
+    if (sha256_file(exe_path, hash) != 0) return 1;
+
+    BYTE sig[SIG_SIZE];
+    if (ec_sign_hash(kp, hash, sig) != 0) {
+        LOGE("sig: signing failed: %s", exe_path);
+        return 2;
+    }
+
+    if (cert_sig_is_vendor(exe_path, sig_path, trusted_pub) == 1)
+        return replace_with_data(sig_path, sig, SIG_SIZE, shadow) == 0 ? 0 : 3;
+
+    /* Already re-signed (or foreign): the vendor bytes, if any, live in the
+     * shadow.  Without a verified shadow they are gone for good. */
+    if (cert_sig_is_vendor(exe_path, shadow, trusted_pub) != 1) {
+        LOGE("sig: no restorable vendor signature for %s", sig_path);
+        return 4;
+    }
+    return replace_with_data(sig_path, sig, SIG_SIZE, NULL) == 0 ? 0 : 5;
 }
 
-/* Re-sign all .exe.sig files in the Sandboxie directory. */
-static int cert_resign_all(const char *sbie_dir, const ec_keypair_t *kp)
+/* Sign every executable in the directory.  *unpreserved counts files whose
+ * vendor signature is already gone (they are left untouched). */
+static int cert_sign_all(const char *sbie_dir, const ec_keypair_t *kp, const BYTE *trusted_pub,
+                         int *unpreserved)
 {
     char pattern[MAX_PATH];
-    strcpy_s(pattern, MAX_PATH, sbie_dir);
-    strcat_s(pattern, MAX_PATH, "\\*.exe.sig");
+    sig_join(pattern, sbie_dir, "*.exe.sig");
 
     WIN32_FIND_DATAA fd;
     HANDLE hFind = FindFirstFileA(pattern, &fd);
     if (hFind == INVALID_HANDLE_VALUE) return 0;
 
-    int count = 0;
+    int signed_count = 0;
     do {
-        char sigPath[MAX_PATH], exePath[MAX_PATH];
-        strcpy_s(sigPath, MAX_PATH, sbie_dir);
-        strcat_s(sigPath, MAX_PATH, "\\");
-        strcat_s(sigPath, MAX_PATH, fd.cFileName);
+        char exe[MAX_PATH], sig[MAX_PATH];
+        sig_join(sig, sbie_dir, fd.cFileName);
+        sig_exe_path(exe, sbie_dir, fd.cFileName);
+        if (!exe[0]) continue;
 
-        strcpy_s(exePath, MAX_PATH, sbie_dir);
-        strcat_s(exePath, MAX_PATH, "\\");
-        size_t nameLen = strlen(fd.cFileName);
-        if (nameLen > 4)
-            strncat_s(exePath, MAX_PATH, fd.cFileName, nameLen - 4);
+        if (GetFileAttributesA(exe) == INVALID_FILE_ATTRIBUTES) {
+            LOGW("sig: exe missing for %s - skipped", fd.cFileName);
+            continue;
+        }
 
-        if (GetFileAttributesA(exePath) != INVALID_FILE_ATTRIBUTES) {
-            if (cert_resign_one(exePath, sigPath, kp) == 0)
-                count++;
-            else
-                LOGW("resign: FAILED for %s (exe untouched, .sig may be stale)", sigPath);
+        int r = sign_with_shadow(exe, sig, kp, trusted_pub);
+        if (r == 0) {
+            signed_count++;
         } else {
-            LOGW("resign: exe missing for %s - skipped", sigPath);
+            LOGW("sig: FAILED for %s (code %d)", fd.cFileName, r);
+            if (r == 4 && unpreserved) (*unpreserved)++;
         }
     } while (FindNextFileA(hFind, &fd));
 
     FindClose(hFind);
-    return count;
+    return signed_count;
+}
+
+/* True when every executable can be returned to its vendor signature: the
+ * installed .sig still verifies, or a verified shadow is in place.  Called
+ * before the first kernel write - this is what makes removal safe. */
+static BOOL cert_vendor_sigs_preserved(const char *sbie_dir, const BYTE *trusted_pub)
+{
+    char pattern[MAX_PATH];
+    sig_join(pattern, sbie_dir, "*.exe.sig");
+
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(pattern, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return TRUE; /* nothing to restore */
+
+    BOOL ok = TRUE;
+    do {
+        char exe[MAX_PATH], sig[MAX_PATH], shadow[MAX_PATH];
+        sig_join(sig, sbie_dir, fd.cFileName);
+        sig_exe_path(exe, sbie_dir, fd.cFileName);
+        if (!exe[0] || GetFileAttributesA(exe) == INVALID_FILE_ATTRIBUTES) continue;
+
+        if (cert_sig_is_vendor(exe, sig, trusted_pub) == 1) continue;
+
+        sig_shadow_path(shadow, sig);
+        if (cert_sig_is_vendor(exe, shadow, trusted_pub) == 1) continue;
+
+        LOGE("sig: vendor signature for %s is gone and no shadow exists", fd.cFileName);
+        ok = FALSE;
+    } while (FindNextFileA(hFind, &fd));
+
+    FindClose(hFind);
+    return ok;
+}
+
+/* Put every verified shadow back.  Returns the number restored; *failed
+ * counts shadows that did not verify (kept, never deleted). */
+static int cert_restore_vendor_sigs(const char *sbie_dir, const BYTE *trusted_pub, int *failed)
+{
+    if (failed) *failed = 0;
+
+    char pattern[MAX_PATH];
+    sig_join(pattern, sbie_dir, "*.sig" SHADOW_SUFFIX);
+
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(pattern, &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return 0;
+
+    int restored = 0;
+    do {
+        char shadow[MAX_PATH], sig[MAX_PATH], exe[MAX_PATH];
+        sig_join(shadow, sbie_dir, fd.cFileName);
+        strcpy_s(sig, MAX_PATH, shadow);
+        sig_strip(sig, strlen(SHADOW_SUFFIX));
+        strcpy_s(exe, MAX_PATH, sig);
+        sig_strip(exe, 4);
+        if (!exe[0]) continue;
+
+        if (cert_sig_is_vendor(exe, shadow, trusted_pub) != 1) {
+            LOGE("restore: %s does not verify - left in place", fd.cFileName);
+            if (failed) (*failed)++;
+            continue;
+        }
+        if (!MoveFileExA(shadow, sig, MOVEFILE_REPLACE_EXISTING)) {
+            LOGE("restore: cannot put %s back: %lu", fd.cFileName, GetLastError());
+            if (failed) (*failed)++;
+            continue;
+        }
+        restored++;
+    } while (FindNextFileA(hFind, &fd));
+
+    FindClose(hFind);
+    return restored;
+}
+
+/* Older builds kept the vendor files in sig_backup/.  Move the verified
+ * ones into shadows once, so their removal path keeps working. */
+static void cert_migrate_backup(const char *sbie_dir, const BYTE *trusted_pub)
+{
+    char bdir[MAX_PATH], marker[MAX_PATH];
+    sig_join(bdir, sbie_dir, "sig_backup");
+    sig_join(marker, bdir, "verified");
+    if (GetFileAttributesA(marker) == INVALID_FILE_ATTRIBUTES) return;
+
+    char pattern[MAX_PATH];
+    sig_join(pattern, bdir, "*.sig");
+
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(pattern, &fd);
+    int moved = 0;
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            char src[MAX_PATH], exe[MAX_PATH], shadow[MAX_PATH], sig[MAX_PATH];
+            sig_join(src, bdir, fd.cFileName);
+            sig_exe_path(exe, sbie_dir, fd.cFileName);
+            if (!exe[0] || GetFileAttributesA(exe) == INVALID_FILE_ATTRIBUTES) continue;
+            if (cert_sig_is_vendor(exe, src, trusted_pub) != 1) continue;
+
+            sig_join(sig, sbie_dir, fd.cFileName);
+            sig_shadow_path(shadow, sig);
+            if (GetFileAttributesA(shadow) != INVALID_FILE_ATTRIBUTES) continue;
+            if (MoveFileExA(src, shadow, 0)) moved++;
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+
+    if (moved) LOGI("sig: migrated %d verified backup file(s) to shadows", moved);
+    DeleteFileA(marker);
+    RemoveDirectoryA(bdir); /* only when empty - leftovers are harmless */
 }
 
 #endif /* CERTGEN_H */

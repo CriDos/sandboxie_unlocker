@@ -14,10 +14,10 @@
 #include <windows.h>
 #include "log.h"
 
-#define SAFETY_REGKEY          "SOFTWARE\\sandboxie_unlocker"
-#define SAFETY_REG_FAIL_COUNT  "fail_count"
-#define SAFETY_REG_ACTIVE      "attempt_active"
-#define CRASH_LIMIT            3
+#define SAFETY_REGKEY "SOFTWARE\\sandboxie_unlocker"
+#define SAFETY_REG_FAIL_COUNT "fail_count"
+#define SAFETY_REG_ACTIVE "attempt_active"
+#define CRASH_LIMIT 3
 
 static volatile LONG g_safety_attempt_owned = 0;
 
@@ -39,11 +39,10 @@ static void safety_write_dword(const char *name, DWORD val)
 {
     HKEY hKey;
     DWORD disp = 0;
-    if (RegCreateKeyExA(HKEY_CURRENT_USER, SAFETY_REGKEY, 0, NULL, 0,
-                        KEY_WRITE, NULL, &hKey, &disp) == ERROR_SUCCESS) {
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, SAFETY_REGKEY, 0, NULL, 0, KEY_WRITE, NULL, &hKey,
+                        &disp) == ERROR_SUCCESS) {
         LONG st = RegSetValueExA(hKey, name, 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
-        if (st != ERROR_SUCCESS)
-            LOGW("Safe-fail registry write failed: %s err=%ld", name, st);
+        if (st != ERROR_SUCCESS) LOGW("Safe-fail registry write failed: %s err=%ld", name, st);
         RegCloseKey(hKey);
     } else {
         LOGW("Safe-fail registry key open failed: %s", SAFETY_REGKEY);
@@ -90,8 +89,18 @@ static void safety_finish_failure(void)
 }
 
 static void safety_clear_active_attempt(void)
+{ safety_write_dword(SAFETY_REG_ACTIVE, 0); }
+
+/* Quick gate for the boot fast path: safe mode means no kernel work. */
+static BOOL safety_unlock_allowed(void)
+{ return safety_read_dword(SAFETY_REG_FAIL_COUNT, 0) < CRASH_LIMIT; }
+
+/* The boot fast path finished its kernel work without crashing: hand the
+ * attempt over to the background thread without counting a failure. */
+static void safety_fast_path_done(void)
 {
     safety_write_dword(SAFETY_REG_ACTIVE, 0);
+    InterlockedExchange(&g_safety_attempt_owned, 0);
 }
 
 #endif /* SAFETY_H */

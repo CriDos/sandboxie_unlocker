@@ -16,15 +16,14 @@ static BOOL read_file_all(const char *path, BYTE **out, DWORD *out_size, DWORD m
     *out = NULL;
     *out_size = 0;
 
-    HANDLE hFile = CreateFileA(path, GENERIC_READ,
-                               FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+    HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                OPEN_EXISTING, 0, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return FALSE;
 
     DWORD size = GetFileSize(hFile, NULL);
     if (size == INVALID_FILE_SIZE || size == 0 || size > max_size) {
         CloseHandle(hFile);
-        SetLastError(ERROR_INVALID_DATA);   /* empty, huge or unreadable */
+        SetLastError(ERROR_INVALID_DATA); /* empty, huge or unreadable */
         return FALSE;
     }
 
@@ -37,7 +36,7 @@ static BOOL read_file_all(const char *path, BYTE **out, DWORD *out_size, DWORD m
 
     DWORD got = 0;
     BOOL ok = ReadFile(hFile, buf, size, &got, NULL);
-    DWORD err = ok ? ERROR_INVALID_DATA : GetLastError();  /* short read */
+    DWORD err = ok ? ERROR_INVALID_DATA : GetLastError(); /* short read */
     CloseHandle(hFile);
     if (!ok || got != size) {
         HeapFree(GetProcessHeap(), 0, buf);
@@ -65,8 +64,7 @@ static void cleanup_stale_temp_drivers(const char *tempDir)
 
     WIN32_FIND_DATAA fd;
     HANDLE hFind = FindFirstFileA(pattern, &fd);
-    if (hFind == INVALID_HANDLE_VALUE)
-        return;
+    if (hFind == INVALID_HANDLE_VALUE) return;
 
     FILETIME nowFt;
     GetSystemTimeAsFileTime(&nowFt);
@@ -82,21 +80,20 @@ static void cleanup_stale_temp_drivers(const char *tempDir)
          * host process.  A truncated path simply fails to open. */
         _snprintf_s(p, MAX_PATH, _TRUNCATE, "%s\\%s", tempDir, fd.cFileName);
 
-        ULONG64 file64 = ((ULONG64)fd.ftLastWriteTime.dwHighDateTime << 32) |
-                          fd.ftLastWriteTime.dwLowDateTime;
+        ULONG64 file64 =
+            ((ULONG64)fd.ftLastWriteTime.dwHighDateTime << 32) | fd.ftLastWriteTime.dwLowDateTime;
         ULONG64 ageSec = (now64 > file64) ? (now64 - file64) / TICKS_PER_SEC : 0;
         if (ageSec < REUSE_GRACE_SEC) {
-            skipped++;   /* may belong to an instance that has not loaded yet */
+            skipped++; /* may belong to an instance that has not loaded yet */
             continue;
         }
 
-        HANDLE h = CreateFileA(p, DELETE, 0, NULL, OPEN_EXISTING,
-                               FILE_FLAG_DELETE_ON_CLOSE, NULL);
+        HANDLE h = CreateFileA(p, DELETE, 0, NULL, OPEN_EXISTING, FILE_FLAG_DELETE_ON_CLOSE, NULL);
         if (h != INVALID_HANDLE_VALUE) {
             CloseHandle(h);
             removed++;
         } else {
-            skipped++;   /* held by a staging writer or a live image section */
+            skipped++; /* held by a staging writer or a live image section */
         }
     } while (FindNextFileA(hFind, &fd));
     FindClose(hFind);

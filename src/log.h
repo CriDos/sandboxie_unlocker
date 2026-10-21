@@ -20,11 +20,13 @@ static HMODULE g_self_module = NULL;
  * adds ~4 KB.  One previous file is kept, the older one is overwritten. */
 #define LOG_MAX_BYTES (1024u * 1024u)
 
+/* Defined below; log_init needs it for the ANSI-path warning. */
+static void log_write(const char *level, const char *fmt, ...);
+
 static void log_rotate(void)
 {
-    HANDLE hFile = CreateFileA(g_log_path, GENERIC_READ,
-                               FILE_SHARE_READ | FILE_SHARE_WRITE,
-                               NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE hFile = CreateFileA(g_log_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                               OPEN_EXISTING, 0, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return;
     DWORD size = GetFileSize(hFile, NULL);
     CloseHandle(hFile);
@@ -37,6 +39,19 @@ static void log_rotate(void)
     MoveFileExA(g_log_path, old_path, MOVEFILE_REPLACE_EXISTING);
 }
 
+/* Is the log file creatable where it should live?  The install directory is
+ * admin-only and SandMan.exe is asInvoker, so an unelevated host (a plain
+ * double-click) cannot write next to the DLL - without a fallback the hook
+ * would look like it never ran at all. */
+static BOOL log_path_writable(void)
+{
+    HANDLE h = CreateFileA(g_log_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+    CloseHandle(h);
+    return TRUE;
+}
+
 static void log_init(void)
 {
     if (g_log_path[0]) return;
@@ -47,15 +62,36 @@ static void log_init(void)
     } else {
         strcpy_s(g_log_path, MAX_PATH, "version_hook.log");
     }
+
+    /* GetModuleFileNameA is ANSI: a path the code page cannot represent
+     * comes back with '?' in it (no file name may contain one), and every
+     * file operation next to the DLL would fail.  Fall back so at least
+     * the reason is on record. */
+    BOOL ansi_ok = strchr(g_log_path, '?') == NULL;
+    if (!ansi_ok || !log_path_writable()) {
+        char appData[MAX_PATH];
+        DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", appData, MAX_PATH);
+        if (n && n < MAX_PATH) {
+            char dir[MAX_PATH];
+            _snprintf_s(dir, MAX_PATH, _TRUNCATE, "%s\\sandboxie_unlocker", appData);
+            CreateDirectoryA(dir, NULL);
+            _snprintf_s(g_log_path, MAX_PATH, _TRUNCATE, "%s\\sandboxie_unlocker\\version_hook.log",
+                        appData);
+        }
+    }
     log_rotate();
+    if (!ansi_ok)
+        log_write("WARN",
+                  "Install path is not representable in the ANSI code page - the unlock cannot "
+                  "read or write next to the DLL from here");
 }
 
 static void log_write(const char *level, const char *fmt, ...)
 {
     log_init();
 
-    HANDLE hFile = CreateFileA(g_log_path, FILE_APPEND_DATA, FILE_SHARE_READ,
-                               NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = CreateFileA(g_log_path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return;
 
     SYSTEMTIME st;
@@ -84,8 +120,8 @@ static void log_write(const char *level, const char *fmt, ...)
     CloseHandle(hFile);
 }
 
-#define LOGI(...) log_write("INFO",  __VA_ARGS__)
+#define LOGI(...) log_write("INFO", __VA_ARGS__)
 #define LOGE(...) log_write("ERROR", __VA_ARGS__)
-#define LOGW(...) log_write("WARN",  __VA_ARGS__)
+#define LOGW(...) log_write("WARN", __VA_ARGS__)
 
 #endif /* LOG_H */

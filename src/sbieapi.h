@@ -19,14 +19,14 @@
 #include <windows.h>
 #include "log.h"
 
-#define SBIE_CONF_FLAG_RELOAD_CERT  0x80000000UL
+#define SBIE_CONF_FLAG_RELOAD_CERT 0x80000000UL
 #define SBIE_FEATURE_FLAG_CERTIFIED 0x80000000UL
 
 /* Session id Sandboxie's About dialog uses for a global reload. */
-#define SBIE_RELOAD_SESSION_ID      ((ULONG)-1)
+#define SBIE_RELOAD_SESSION_ID ((ULONG) - 1)
 
-typedef LONG (WINAPI *fn_SbieApi_ReloadConf)(ULONG session_id, ULONG flags);
-typedef LONG (WINAPI *fn_SbieApi_QueryDrvInfo)(ULONG info_class, void *info_data, ULONG info_size);
+typedef LONG(WINAPI *fn_SbieApi_ReloadConf)(ULONG session_id, ULONG flags);
+typedef LONG(WINAPI *fn_SbieApi_QueryDrvInfo)(ULONG info_class, void *info_data, ULONG info_size);
 
 /* Load SbieDll.dll from the Sandboxie directory and resolve one export.
  * The module is left loaded: unloading it could undo hooking it does for
@@ -45,15 +45,12 @@ static void *sbie_dll_proc(const char *sbie_dir, const char *name)
         strcat_s(path, MAX_PATH, "\\SbieDll.dll");
 
         dll = LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-        if (!dll)
-            LOGW("sbieapi: %s not loadable: %lu", path, GetLastError());
+        if (!dll) LOGW("sbieapi: %s not loadable: %lu", path, GetLastError());
     }
-    if (!dll)
-        return NULL;
+    if (!dll) return NULL;
 
     void *fn = (void *)GetProcAddress(dll, name);
-    if (!fn)
-        LOGW("sbieapi: SbieDll.dll has no %s export", name);
+    if (!fn) LOGW("sbieapi: SbieDll.dll has no %s export", name);
     return fn;
 }
 
@@ -63,8 +60,7 @@ static int sbie_reload_certificate(const char *sbie_dir)
 {
     fn_SbieApi_ReloadConf reload =
         (fn_SbieApi_ReloadConf)sbie_dll_proc(sbie_dir, "SbieApi_ReloadConf");
-    if (!reload)
-        return 1;
+    if (!reload) return 1;
 
     LONG status = reload(SBIE_RELOAD_SESSION_ID, SBIE_CONF_FLAG_RELOAD_CERT);
     if (status) {
@@ -80,8 +76,7 @@ static void sbie_log_cert_state(const char *sbie_dir)
 {
     fn_SbieApi_QueryDrvInfo query =
         (fn_SbieApi_QueryDrvInfo)sbie_dll_proc(sbie_dir, "SbieApi_QueryDrvInfo");
-    if (!query)
-        return;
+    if (!query) return;
 
     ULONG flags = 0;
     LONG status = query(0, &flags, sizeof(flags));

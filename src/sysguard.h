@@ -1,7 +1,7 @@
 /*
- * sysguard.h - raw registry snapshot (log only, no interpretation) of
- * mechanisms that can block the helper driver or the kernel patch:
- * CI\Config blocklist, Smart App Control, VBS/HVCI, Secure Boot,
+ * sysguard.h - raw snapshot (log only, no interpretation) of mechanisms
+ * that can block the helper driver or the kernel patch:
+ * CI\Config blocklist, Smart App Control, live CI/HVCI state, Secure Boot,
  * Driver Verifier, WDAC policies, OS build.
  */
 #ifndef SYSGUARD_H
@@ -12,11 +12,9 @@
 #include <string.h>
 #include "log.h"
 
-#define SYSG_CI_CONFIG   "SYSTEM\\CurrentControlSet\\Control\\CI\\Config"
-#define SYSG_CI_POLICY   "SYSTEM\\CurrentControlSet\\Control\\CI\\Policy"
-#define SYSG_DEVICEGUARD "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard"
-#define SYSG_HVCI        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity"
-#define SYSG_SECUREBOOT  "SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State"
+#define SYSG_CI_CONFIG "SYSTEM\\CurrentControlSet\\Control\\CI\\Config"
+#define SYSG_CI_POLICY "SYSTEM\\CurrentControlSet\\Control\\CI\\Policy"
+#define SYSG_SECUREBOOT "SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State"
 #define SYSG_MEMORY_MGMT "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management"
 
 /* Read a DWORD.  Returns 0 and sets *absent when the value or the key
@@ -24,9 +22,11 @@
 static DWORD sysg_reg_dword(const char *key, const char *value, int *absent)
 {
     DWORD v = 0, sz = sizeof(v);
-    LSTATUS st = RegGetValueA(HKEY_LOCAL_MACHINE, key, value,
-                              RRF_RT_REG_DWORD, NULL, &v, &sz);
-    if (st == ERROR_SUCCESS) { *absent = 0; return v; }
+    LSTATUS st = RegGetValueA(HKEY_LOCAL_MACHINE, key, value, RRF_RT_REG_DWORD, NULL, &v, &sz);
+    if (st == ERROR_SUCCESS) {
+        *absent = 0;
+        return v;
+    }
     *absent = 1;
     if (!(st == ERROR_FILE_NOT_FOUND || st == ERROR_PATH_NOT_FOUND))
         LOGW("RegGetValue %s\\%s failed: 0x%lX (%lu)", key, value, (ULONG)st, (ULONG)st);
@@ -57,46 +57,64 @@ typedef struct {
     WCHAR szCSDVersion[128];
 } SYSG_OSVI;
 
-typedef LONG (WINAPI *SYSG_RTLGETVERSION)(SYSG_OSVI *);
+typedef LONG(WINAPI *SYSG_RTLGETVERSION)(SYSG_OSVI *);
 
 static const char *sysg_build_label(ULONG build)
 {
     switch (build) {
-    case 26100: return "24H2";
-    case 22631: return "23H2";
-    case 22621: return "22H2";
-    case 22000: return "21H2";
-    case 19045: return "10 22H2";
-    case 19044: case 19043: return "10 21H2";
-    case 19042: return "10 20H2";
-    case 19041: return "10 2004";
-    case 17763: return "10 1809";
-    case 17134: return "10 1803";
-    case 16299: return "10 1709";
-    case 14393: return "10 1607";
-    default:    return "";
+    case 26100:
+        return "24H2";
+    case 22631:
+        return "23H2";
+    case 22621:
+        return "22H2";
+    case 22000:
+        return "21H2";
+    case 19045:
+        return "10 22H2";
+    case 19044:
+    case 19043:
+        return "10 21H2";
+    case 19042:
+        return "10 20H2";
+    case 19041:
+        return "10 2004";
+    case 17763:
+        return "10 1809";
+    case 17134:
+        return "10 1803";
+    case 16299:
+        return "10 1709";
+    case 14393:
+        return "10 1607";
+    default:
+        return "";
     }
 }
 
 static void sysg_log_build(void)
 {
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-    SYSG_RTLGETVERSION fn = ntdll ?
-        (SYSG_RTLGETVERSION)GetProcAddress(ntdll, "RtlGetVersion") : NULL;
-    if (!fn) { LOGW("RtlGetVersion unavailable"); return; }
+    SYSG_RTLGETVERSION fn =
+        ntdll ? (SYSG_RTLGETVERSION)GetProcAddress(ntdll, "RtlGetVersion") : NULL;
+    if (!fn) {
+        LOGW("RtlGetVersion unavailable");
+        return;
+    }
 
     SYSG_OSVI vi;
     memset(&vi, 0, sizeof(vi));
     vi.dwOSVersionInfoSize = sizeof(vi);
-    if (fn(&vi) != 0) { LOGW("RtlGetVersion failed"); return; }
+    if (fn(&vi) != 0) {
+        LOGW("RtlGetVersion failed");
+        return;
+    }
 
     const char *label = sysg_build_label(vi.dwBuildNumber);
     if (label[0])
-        LOGI("OS: %lu.%lu.%lu (%s)", vi.dwMajorVersion, vi.dwMinorVersion,
-             vi.dwBuildNumber, label);
+        LOGI("OS: %lu.%lu.%lu (%s)", vi.dwMajorVersion, vi.dwMinorVersion, vi.dwBuildNumber, label);
     else
-        LOGI("OS: %lu.%lu.%lu", vi.dwMajorVersion, vi.dwMinorVersion,
-             vi.dwBuildNumber);
+        LOGI("OS: %lu.%lu.%lu", vi.dwMajorVersion, vi.dwMinorVersion, vi.dwBuildNumber);
 }
 
 /* ------------------------------------------------------------------ */
@@ -120,8 +138,14 @@ static void sysg_log_ci_config(void)
         DWORD nameLen = sizeof(name), dataLen = sizeof(data), type = 0;
         st = RegEnumValueA(hKey, idx, name, &nameLen, NULL, &type, data, &dataLen);
         if (st == ERROR_NO_MORE_ITEMS) break;
-        if (st == ERROR_MORE_DATA) { idx++; continue; }  /* oversized name/data: skip */
-        if (st != ERROR_SUCCESS) { LOGW("CI\\Config enum failed: 0x%lX (%lu)", (ULONG)st, (ULONG)st); break; }
+        if (st == ERROR_MORE_DATA) {
+            idx++;
+            continue;
+        } /* oversized name/data: skip */
+        if (st != ERROR_SUCCESS) {
+            LOGW("CI\\Config enum failed: 0x%lX (%lu)", (ULONG)st, (ULONG)st);
+            break;
+        }
         if (nameLen >= sizeof(name)) nameLen = sizeof(name) - 1;
         name[nameLen] = 0;
 
@@ -157,15 +181,38 @@ static void sysg_log_ci_config(void)
 /*  Fixed checks                                                      */
 /* ------------------------------------------------------------------ */
 
+/* The DeviceGuard registry keys hold the *requested* policy and are empty
+ * on managed systems where VBS runs anyway.  SystemCodeIntegrityInformation
+ * reports what the kernel enforces right now - the state that actually
+ * decides whether the helper driver and the patch are allowed. */
+#define SYSG_CI_INFO_CLASS 103
+
+typedef struct {
+    ULONG Length;
+    ULONG CodeIntegrityOptions;
+} SYSG_CI_INFO;
+
+static void sysg_log_ci_state(void)
+{
+    typedef LONG(NTAPI * SYSG_NTQSI)(ULONG, PVOID, ULONG, PULONG);
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    SYSG_NTQSI fn = ntdll ? (SYSG_NTQSI)GetProcAddress(ntdll, "NtQuerySystemInformation") : NULL;
+    SYSG_CI_INFO ci = {sizeof(ci), 0};
+    if (!fn || fn(SYSG_CI_INFO_CLASS, &ci, sizeof(ci), NULL) < 0) {
+        LOGW("CI: live state unavailable");
+        return;
+    }
+
+    DWORD o = ci.CodeIntegrityOptions;
+    LOGI("CI: options=0x%lX test-sign=%d umci=%d hvci=%d hvci-audit=%d hvci-strict=%d", o,
+         !!(o & 0x2), !!(o & 0x4), !!(o & 0x2000), !!(o & 0x800), !!(o & 0x1000));
+}
+
 static void sysg_log_dwords(void)
 {
     sysg_line_dword("CI.SAC", SYSG_CI_POLICY, "VerifiedAndReputablePolicyState");
-    sysg_line_dword("VBS", SYSG_DEVICEGUARD, "EnableVirtualizationBasedSecurity");
-    sysg_line_dword("VBS", SYSG_DEVICEGUARD, "RequirePlatformSecurityFeatures");
-    sysg_line_dword("VBS", SYSG_DEVICEGUARD, "Locked");
-    sysg_line_dword("HVCI", SYSG_HVCI, "Enabled");
-    sysg_line_dword("HVCI", SYSG_HVCI, "Locked");
     sysg_line_dword("SecureBoot", SYSG_SECUREBOOT, "UEFISecureBootEnabled");
+    sysg_log_ci_state();
 }
 
 static void sysg_log_verifier(void)
@@ -187,7 +234,10 @@ static void sysg_log_verifier(void)
     int trunc = (st == ERROR_MORE_DATA) ? 1 : 0;
     /* On ERROR_MORE_DATA RegGetValue reports the size it NEEDED, which is
      * larger than the buffer - clamp or the scan below reads past the end. */
-    if (got > sizeof(val)) { trunc = 1; got = sizeof(val); }
+    if (got > sizeof(val)) {
+        trunc = 1;
+        got = sizeof(val);
+    }
 
     ULONG f = 0, i;
     for (i = 0; i + 1 < got; i++) {
@@ -196,7 +246,10 @@ static void sysg_log_verifier(void)
             if (val[i + 1] == 0) break;
             c = ' ';
         }
-        if (f + 1 >= (ULONG)sizeof(flat)) { trunc = 1; break; }
+        if (f + 1 >= (ULONG)sizeof(flat)) {
+            trunc = 1;
+            break;
+        }
         flat[f++] = c;
     }
     flat[f] = 0;
@@ -209,10 +262,8 @@ static void sysg_log_verifier(void)
 
 static void sysg_log_wdac(void)
 {
-    static const char *keys[] = {
-        "SYSTEM\\CurrentControlSet\\Control\\CI\\CIPolicies",
-        "SYSTEM\\CurrentControlSet\\Control\\CI\\ProtectedPolicies"
-    };
+    static const char *keys[] = {"SYSTEM\\CurrentControlSet\\Control\\CI\\CIPolicies",
+                                 "SYSTEM\\CurrentControlSet\\Control\\CI\\ProtectedPolicies"};
     int k;
     for (k = 0; k < 2; k++) {
         HKEY hKey;
@@ -230,7 +281,10 @@ static void sysg_log_wdac(void)
             DWORD nameLen = sizeof(name);
             st = RegEnumKeyExA(hKey, idx, name, &nameLen, NULL, NULL, NULL, NULL);
             if (st == ERROR_NO_MORE_ITEMS) break;
-            if (st == ERROR_MORE_DATA) { idx++; continue; }
+            if (st == ERROR_MORE_DATA) {
+                idx++;
+                continue;
+            }
             if (st != ERROR_SUCCESS) break;
             if (nameLen >= sizeof(name)) nameLen = sizeof(name) - 1;
             name[nameLen] = 0;
@@ -246,8 +300,7 @@ static void sysg_log_wdac(void)
         RegCloseKey(hKey);
 
         LOGI("WDAC: %s = %u policy(ies)", keys[k], count);
-        if (count && count <= 8)
-            LOGI("WDAC:   %s", list);
+        if (count && count <= 8) LOGI("WDAC:   %s", list);
     }
 }
 

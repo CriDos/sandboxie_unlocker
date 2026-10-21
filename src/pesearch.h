@@ -15,15 +15,11 @@
 
 /* The original KphpTrustedPublicKey[72] from verify.c */
 static const BYTE ORIGINAL_KEY[KEY_SIZE] = {
-    0x45, 0x43, 0x53, 0x31, 0x20, 0x00, 0x00, 0x00,
-    0x05, 0x7A, 0x12, 0x5A, 0xF8, 0x54, 0x01, 0x42,
-    0xDB, 0x19, 0x87, 0xFC, 0xC4, 0xE3, 0xD3, 0x8D,
-    0x46, 0x7B, 0x74, 0x01, 0x12, 0xFC, 0x78, 0xEB,
-    0xEF, 0x7F, 0xF6, 0xAF, 0x4D, 0x9A, 0x3A, 0xF6,
-    0x64, 0x90, 0xDB, 0xE3, 0x48, 0xAB, 0x3E, 0xA7,
-    0x2F, 0xC1, 0x18, 0x32, 0xBD, 0x23, 0x02, 0x9D,
-    0x3F, 0xF3, 0x27, 0x86, 0x71, 0x45, 0x26, 0x14,
-    0x14, 0xF5, 0x19, 0xAA, 0x2D, 0xEE, 0x50, 0x10,
+    0x45, 0x43, 0x53, 0x31, 0x20, 0x00, 0x00, 0x00, 0x05, 0x7A, 0x12, 0x5A, 0xF8, 0x54, 0x01,
+    0x42, 0xDB, 0x19, 0x87, 0xFC, 0xC4, 0xE3, 0xD3, 0x8D, 0x46, 0x7B, 0x74, 0x01, 0x12, 0xFC,
+    0x78, 0xEB, 0xEF, 0x7F, 0xF6, 0xAF, 0x4D, 0x9A, 0x3A, 0xF6, 0x64, 0x90, 0xDB, 0xE3, 0x48,
+    0xAB, 0x3E, 0xA7, 0x2F, 0xC1, 0x18, 0x32, 0xBD, 0x23, 0x02, 0x9D, 0x3F, 0xF3, 0x27, 0x86,
+    0x71, 0x45, 0x26, 0x14, 0x14, 0xF5, 0x19, 0xAA, 0x2D, 0xEE, 0x50, 0x10,
 };
 
 /* ECS1 magic + keysize=0x20 pattern (for already-patched binaries) */
@@ -41,22 +37,22 @@ static ULONG pe_offset_to_rva_ex(const BYTE *pe_data, DWORD data_size, DWORD fil
     if (data_size < sizeof(IMAGE_DOS_HEADER) + sizeof(IMAGE_NT_HEADERS64)) return 0;
     IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)pe_data;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
-    if (dos->e_lfanew < 0 ||
-        (DWORD)dos->e_lfanew > data_size - sizeof(IMAGE_NT_HEADERS64)) return 0;
+    if (dos->e_lfanew < 0 || (DWORD)dos->e_lfanew > data_size - sizeof(IMAGE_NT_HEADERS64))
+        return 0;
 
     IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(pe_data + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
 
-    DWORD secTableOff = dos->e_lfanew + 4 + (DWORD)sizeof(IMAGE_FILE_HEADER) +
-                        nt->FileHeader.SizeOfOptionalHeader;
+    DWORD secTableOff =
+        dos->e_lfanew + 4 + (DWORD)sizeof(IMAGE_FILE_HEADER) + nt->FileHeader.SizeOfOptionalHeader;
     DWORD secTableSize = (DWORD)nt->FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER);
     if (secTableOff > data_size || secTableSize > data_size - secTableOff) return 0;
 
     IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
     for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++) {
         DWORD rawStart = sec[i].PointerToRawData;
-        DWORD rawEnd   = rawStart + sec[i].SizeOfRawData;
-        if (rawEnd < rawStart) continue;  /* overflow guard */
+        DWORD rawEnd = rawStart + sec[i].SizeOfRawData;
+        if (rawEnd < rawStart) continue; /* overflow guard */
         if (file_offset >= rawStart && file_offset < rawEnd) {
             if (section_writable)
                 *section_writable = !!(sec[i].Characteristics & IMAGE_SCN_MEM_WRITE);
@@ -67,9 +63,7 @@ static ULONG pe_offset_to_rva_ex(const BYTE *pe_data, DWORD data_size, DWORD fil
 }
 
 static ULONG pe_offset_to_rva(const BYTE *pe_data, DWORD data_size, DWORD file_offset)
-{
-    return pe_offset_to_rva_ex(pe_data, data_size, file_offset, NULL);
-}
+{ return pe_offset_to_rva_ex(pe_data, data_size, file_offset, NULL); }
 
 /* Find the RVA of the ECDSA key in SbieDrv.sys on disk.  *section_writable
  * reports whether that page can be written directly (SbieDrv >= 1.18.7
@@ -81,16 +75,14 @@ static ULONG pe_find_key_rva_ex(const char *driver_path, BOOL *section_writable)
 
     BYTE *data = NULL;
     DWORD fileSize = 0;
-    if (!read_file_all(driver_path, &data, &fileSize, 16 * 1024 * 1024))
-        return 0;
+    if (!read_file_all(driver_path, &data, &fileSize, 16 * 1024 * 1024)) return 0;
 
     /* Single pass.  Prefer an exact ORIGINAL_KEY match anywhere in the
      * file (unpatched driver); fall back to the first ECS1 magic (a
      * patched driver holds our key there instead). */
     DWORD origOffset = 0, magicOffset = 0;
     for (DWORD i = 0; i + 8 <= fileSize; i++) {
-        if (!magicOffset && memcmp(data + i, ECS1_PATTERN, 8) == 0)
-            magicOffset = i;
+        if (!magicOffset && memcmp(data + i, ECS1_PATTERN, 8) == 0) magicOffset = i;
         if (i + KEY_SIZE <= fileSize && memcmp(data + i, ORIGINAL_KEY, KEY_SIZE) == 0) {
             origOffset = i;
             break;
@@ -106,9 +98,8 @@ static ULONG pe_find_key_rva_ex(const char *driver_path, BOOL *section_writable)
          * boundary would report the wrong permission, and a direct write
          * into a read-only half is the 0xBE bugcheck. */
         BOOL end_writable = writable;
-        ULONG end_rva = rva ? pe_offset_to_rva_ex(data, fileSize,
-                                                  offset + KEY_SIZE - 1,
-                                                  &end_writable) : 0;
+        ULONG end_rva =
+            rva ? pe_offset_to_rva_ex(data, fileSize, offset + KEY_SIZE - 1, &end_writable) : 0;
         if (!rva || end_writable != writable || end_rva != rva + KEY_SIZE - 1) {
             LOGE("pe_find_key_rva: key blob crosses a section boundary - refusing");
             rva = 0;
@@ -121,8 +112,34 @@ static ULONG pe_find_key_rva_ex(const char *driver_path, BOOL *section_writable)
 }
 
 static ULONG pe_find_key_rva(const char *driver_path)
+{ return pe_find_key_rva_ex(driver_path, NULL); }
+
+/* SizeOfImage and TimeDateStamp of the PE at *path*.  Together they
+ * identify the build: the kernel reports the same SizeOfImage for the
+ * mapped module, and the loader never touches the mapped headers, so a
+ * running driver can be checked against the file it was loaded from. */
+static BOOL pe_image_identity(const char *path, ULONG *size_of_image, ULONG *timestamp)
 {
-    return pe_find_key_rva_ex(driver_path, NULL);
+    HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                               OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return FALSE;
+
+    BYTE hdr[0x400];
+    DWORD got = 0;
+    BOOL ok = ReadFile(hFile, hdr, sizeof(hdr), &got, NULL) && got > sizeof(IMAGE_DOS_HEADER);
+    CloseHandle(hFile);
+
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)hdr;
+    if (!ok || dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0 ||
+        (DWORD)dos->e_lfanew + sizeof(IMAGE_NT_HEADERS64) > got)
+        return FALSE;
+
+    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(hdr + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return FALSE;
+
+    if (size_of_image) *size_of_image = nt->OptionalHeader.SizeOfImage;
+    if (timestamp) *timestamp = nt->FileHeader.TimeDateStamp;
+    return TRUE;
 }
 
 #endif /* PESEARCH_H */

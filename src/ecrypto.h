@@ -13,8 +13,8 @@
 #include "log.h"
 #include "fileio.h"
 
-#define BLOB_SIZE       72
-#define SIG_SIZE        64           /* raw R||S */
+#define BLOB_SIZE 72
+#define SIG_SIZE 64 /* raw R||S */
 
 typedef struct {
     BCRYPT_ALG_HANDLE hAlg;
@@ -28,9 +28,19 @@ static int ec_gen_keypair(ec_keypair_t *kp)
     st = BCryptOpenAlgorithmProvider(&kp->hAlg, L"ECDSA_P256", NULL, 0);
     if (st) return 1;
     st = BCryptGenerateKeyPair(kp->hAlg, &kp->hKey, 256, 0);
-    if (st) { BCryptCloseAlgorithmProvider(kp->hAlg, 0); kp->hAlg = NULL; return 2; }
+    if (st) {
+        BCryptCloseAlgorithmProvider(kp->hAlg, 0);
+        kp->hAlg = NULL;
+        return 2;
+    }
     st = BCryptFinalizeKeyPair(kp->hKey, 0);
-    if (st) { BCryptDestroyKey(kp->hKey); kp->hKey = NULL; BCryptCloseAlgorithmProvider(kp->hAlg, 0); kp->hAlg = NULL; return 3; }
+    if (st) {
+        BCryptDestroyKey(kp->hKey);
+        kp->hKey = NULL;
+        BCryptCloseAlgorithmProvider(kp->hAlg, 0);
+        kp->hAlg = NULL;
+        return 3;
+    }
     return 0;
 }
 
@@ -38,8 +48,8 @@ static int ec_gen_keypair(ec_keypair_t *kp)
 static int ec_export_pub_blob(const ec_keypair_t *kp, BYTE *out)
 {
     ULONG exported = 0;
-    NTSTATUS st = BCryptExportKey(kp->hKey, NULL, BCRYPT_ECCPUBLIC_BLOB,
-                                  out, BLOB_SIZE, &exported, 0);
+    NTSTATUS st =
+        BCryptExportKey(kp->hKey, NULL, BCRYPT_ECCPUBLIC_BLOB, out, BLOB_SIZE, &exported, 0);
     return (st == 0 && exported == BLOB_SIZE) ? 0 : 1;
 }
 
@@ -49,8 +59,7 @@ static int ec_sign_hash(const ec_keypair_t *kp, const BYTE *hash32, BYTE *out)
 {
     BYTE sig[128];
     ULONG sig_len = sizeof(sig);
-    NTSTATUS st = BCryptSignHash(kp->hKey, NULL, (PUCHAR)hash32, 32,
-                                 sig, sig_len, &sig_len, 0);
+    NTSTATUS st = BCryptSignHash(kp->hKey, NULL, (PUCHAR)hash32, 32, sig, sig_len, &sig_len, 0);
     if (st) return 1;
     if (sig_len != SIG_SIZE) return 2;
     memcpy(out, sig, SIG_SIZE);
@@ -67,12 +76,14 @@ static int ec_verify_pub(const BYTE *pubBlob, const BYTE *hash32, const BYTE *si
 
     NTSTATUS st = BCryptOpenAlgorithmProvider(&hAlg, L"ECDSA_P256", NULL, 0);
     if (st) return 1;
-    st = BCryptImportKeyPair(hAlg, NULL, BCRYPT_ECCPUBLIC_BLOB, &hKey,
-                             (PUCHAR)pubBlob, BLOB_SIZE, 0);
-    if (st) { BCryptCloseAlgorithmProvider(hAlg, 0); return 2; }
+    st = BCryptImportKeyPair(hAlg, NULL, BCRYPT_ECCPUBLIC_BLOB, &hKey, (PUCHAR)pubBlob, BLOB_SIZE,
+                             0);
+    if (st) {
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        return 2;
+    }
 
-    st = BCryptVerifySignature(hKey, NULL, (PUCHAR)hash32, 32,
-                               (PUCHAR)sig64, SIG_SIZE, 0);
+    st = BCryptVerifySignature(hKey, NULL, (PUCHAR)hash32, 32, (PUCHAR)sig64, SIG_SIZE, 0);
     BCryptDestroyKey(hKey);
     BCryptCloseAlgorithmProvider(hAlg, 0);
     return st ? 3 : 0;
@@ -88,7 +99,7 @@ static int ec_base64_encode(const BYTE *src, ULONG src_len, char *dst, ULONG dst
 
     ULONG i, j = 0;
     for (i = 0; i + 2 < src_len; i += 3) {
-        DWORD n = (src[i] << 16) | (src[i+1] << 8) | src[i+2];
+        DWORD n = (src[i] << 16) | (src[i + 1] << 8) | src[i + 2];
         dst[j++] = B64[(n >> 18) & 63];
         dst[j++] = B64[(n >> 12) & 63];
         dst[j++] = B64[(n >> 6) & 63];
@@ -102,7 +113,7 @@ static int ec_base64_encode(const BYTE *src, ULONG src_len, char *dst, ULONG dst
         dst[j++] = '=';
         dst[j++] = '=';
     } else if (rem == 2) {
-        DWORD n = (src[i] << 16) | (src[i+1] << 8);
+        DWORD n = (src[i] << 16) | (src[i + 1] << 8);
         dst[j++] = B64[(n >> 18) & 63];
         dst[j++] = B64[(n >> 12) & 63];
         dst[j++] = B64[(n >> 6) & 63];
@@ -115,31 +126,34 @@ static int ec_base64_encode(const BYTE *src, ULONG src_len, char *dst, ULONG dst
 /* Free keypair resources. */
 static void ec_free_keypair(ec_keypair_t *kp)
 {
-    if (kp->hKey) { BCryptDestroyKey(kp->hKey); kp->hKey = NULL; }
-    if (kp->hAlg) { BCryptCloseAlgorithmProvider(kp->hAlg, 0); kp->hAlg = NULL; }
+    if (kp->hKey) {
+        BCryptDestroyKey(kp->hKey);
+        kp->hKey = NULL;
+    }
+    if (kp->hAlg) {
+        BCryptCloseAlgorithmProvider(kp->hAlg, 0);
+        kp->hAlg = NULL;
+    }
 }
 
 /* Restrictive DACL (SYSTEM + Administrators) for keypair.dat and the
  * staged driver file.  *sd and *acl must live in the CALLER's frame: sa
  * points into them and is consumed by CreateFileA after the return. */
-static BOOL build_restrictive_sa(SECURITY_ATTRIBUTES *sa,
-                                 SECURITY_DESCRIPTOR *sd, PACL acl, DWORD aclLen)
+static BOOL build_restrictive_sa(SECURITY_ATTRIBUTES *sa, SECURITY_DESCRIPTOR *sd, PACL acl,
+                                 DWORD aclLen)
 {
     BYTE sysSid[SECURITY_MAX_SID_SIZE], admSid[SECURITY_MAX_SID_SIZE];
     DWORD sysLen = sizeof(sysSid), admLen = sizeof(admSid);
 
-    if (!InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION))
-        return FALSE;
-    if (!InitializeAcl(acl, aclLen, ACL_REVISION))
-        return FALSE;
+    if (!InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION)) return FALSE;
+    if (!InitializeAcl(acl, aclLen, ACL_REVISION)) return FALSE;
     if (!CreateWellKnownSid(WinLocalSystemSid, NULL, sysSid, &sysLen) ||
         !CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, admSid, &admLen))
         return FALSE;
     if (!AddAccessAllowedAce(acl, ACL_REVISION, GENERIC_ALL, sysSid) ||
         !AddAccessAllowedAce(acl, ACL_REVISION, GENERIC_ALL, admSid))
         return FALSE;
-    if (!SetSecurityDescriptorDacl(sd, TRUE, acl, FALSE))
-        return FALSE;
+    if (!SetSecurityDescriptorDacl(sd, TRUE, acl, FALSE)) return FALSE;
 
     sa->nLength = sizeof(*sa);
     sa->lpSecurityDescriptor = sd;
@@ -151,27 +165,28 @@ static BOOL build_restrictive_sa(SECURITY_ATTRIBUTES *sa,
 static int ec_save_keypair(const ec_keypair_t *kp, const char *path)
 {
     ULONG blob_len = 0;
-    NTSTATUS st = BCryptExportKey(kp->hKey, NULL, BCRYPT_ECCPRIVATE_BLOB,
-                                  NULL, 0, &blob_len, 0);
+    NTSTATUS st = BCryptExportKey(kp->hKey, NULL, BCRYPT_ECCPRIVATE_BLOB, NULL, 0, &blob_len, 0);
     if (st) return 1;
 
     BYTE *blob = (BYTE *)HeapAlloc(GetProcessHeap(), 0, blob_len);
     if (!blob) return 2;
 
-    st = BCryptExportKey(kp->hKey, NULL, BCRYPT_ECCPRIVATE_BLOB,
-                         blob, blob_len, &blob_len, 0);
-    if (st) { HeapFree(GetProcessHeap(), 0, blob); return 3; }
+    st = BCryptExportKey(kp->hKey, NULL, BCRYPT_ECCPRIVATE_BLOB, blob, blob_len, &blob_len, 0);
+    if (st) {
+        HeapFree(GetProcessHeap(), 0, blob);
+        return 3;
+    }
 
     SECURITY_ATTRIBUTES sa;
     SECURITY_DESCRIPTOR sd;
-    BYTE aclBuf[512];   /* plenty: 2 ACEs need ~52 bytes */
+    BYTE aclBuf[512]; /* plenty: 2 ACEs need ~52 bytes */
     BOOL hasSa = build_restrictive_sa(&sa, &sd, (PACL)aclBuf, (DWORD)sizeof(aclBuf));
     /* CREATE_ALWAYS keeps the existing file's DACL - delete first so a
      * wide-open ACL is never silently preserved. */
     if (hasSa && !DeleteFileA(path) && GetLastError() != ERROR_FILE_NOT_FOUND)
         LOGW("keypair.dat: old file delete failed: %lu", GetLastError());
-    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, hasSa ? &sa : NULL,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, hasSa ? &sa : NULL, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         if (hasSa) LOGW("keypair.dat: restrictive DACL failed on create: %lu", GetLastError());
         HeapFree(GetProcessHeap(), 0, blob);
@@ -202,14 +217,52 @@ static int ec_load_keypair(ec_keypair_t *kp, const char *path)
     }
 
     NTSTATUS st = BCryptOpenAlgorithmProvider(&kp->hAlg, L"ECDSA_P256", NULL, 0);
-    if (st) { HeapFree(GetProcessHeap(), 0, blob); return 2; }
+    if (st) {
+        HeapFree(GetProcessHeap(), 0, blob);
+        return 2;
+    }
 
-    st = BCryptImportKeyPair(kp->hAlg, NULL, BCRYPT_ECCPRIVATE_BLOB,
-                             &kp->hKey, blob, fileSize, 0);
+    st = BCryptImportKeyPair(kp->hAlg, NULL, BCRYPT_ECCPRIVATE_BLOB, &kp->hKey, blob, fileSize, 0);
     HeapFree(GetProcessHeap(), 0, blob);
-    if (st) { BCryptCloseAlgorithmProvider(kp->hAlg, 0); kp->hAlg = NULL; return 3; }
+    if (st) {
+        BCryptCloseAlgorithmProvider(kp->hAlg, 0);
+        kp->hAlg = NULL;
+        return 3;
+    }
 
     return 0;
+}
+
+/* Recover the 72-byte public blob from a saved BCRYPT_ECCPRIVATE_BLOB
+ * without touching CNG: a P-256 private blob is magic + cbKey + X||Y + d,
+ * so the public point is its prefix with the private magic ("ECS2")
+ * swapped for the public one ("ECS1").  The boot fast path uses this
+ * because it runs under the loader lock, where no LoadLibrary (bcrypt is
+ * fine, it is a static import) is worth the deadlock risk.  Returns 0
+ * and fills *out (BLOB_SIZE bytes). */
+static int ec_pub_from_priv_data(const BYTE *priv, ULONG priv_len, BYTE *out)
+{
+    if (priv_len != 8 + 32 + 32 + 32) return 1; /* P-256 only     */
+    if (memcmp(priv, "ECS2", 4) != 0) return 2; /* PRIVATE magic  */
+    if (priv[4] != 0x20 || priv[5] || priv[6] || priv[7]) return 3;
+    memcpy(out, "ECS1", 4); /* PUBLIC magic   */
+    out[4] = 0x20;
+    out[5] = 0;
+    out[6] = 0;
+    out[7] = 0;
+    memcpy(out + 8, priv + 8, 64); /* X||Y           */
+    return 0;
+}
+
+/* File variant: read keypair.dat and recover the public blob. */
+static int ec_pub_from_priv_file(const char *path, BYTE *out)
+{
+    BYTE *blob = NULL;
+    DWORD size = 0;
+    if (!read_file_all(path, &blob, &size, 4096)) return 1;
+    int rc = ec_pub_from_priv_data(blob, size, out);
+    HeapFree(GetProcessHeap(), 0, blob);
+    return rc;
 }
 
 #endif /* ECRYPTO_H */

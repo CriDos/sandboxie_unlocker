@@ -20,7 +20,7 @@
  */
 #define WIN32_LEAN_AND_MEAN
 /* C6553 is SDK-header SAL noise for RegOpenKeyExA(..., 0, ...). */
-#pragma warning(disable: 6553)
+#pragma warning(disable : 6553)
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
@@ -29,29 +29,36 @@
 #include "../src/version.h"
 
 static const char *EXPORTS[] = {
-    "GetFileVersionInfoA",        "GetFileVersionInfoW",
-    "GetFileVersionInfoExA",      "GetFileVersionInfoExW",
-    "GetFileVersionInfoSizeA",    "GetFileVersionInfoSizeW",
-    "GetFileVersionInfoSizeExA",  "GetFileVersionInfoSizeExW",
+    "GetFileVersionInfoA",
+    "GetFileVersionInfoW",
+    "GetFileVersionInfoExA",
+    "GetFileVersionInfoExW",
+    "GetFileVersionInfoSizeA",
+    "GetFileVersionInfoSizeW",
+    "GetFileVersionInfoSizeExA",
+    "GetFileVersionInfoSizeExW",
     "GetFileVersionInfoByHandle",
-    "VerFindFileA",               "VerFindFileW",
-    "VerInstallFileA",            "VerInstallFileW",
-    "VerLanguageNameA",           "VerLanguageNameW",
-    "VerQueryValueA",             "VerQueryValueW",
+    "VerFindFileA",
+    "VerFindFileW",
+    "VerInstallFileA",
+    "VerInstallFileW",
+    "VerLanguageNameA",
+    "VerLanguageNameW",
+    "VerQueryValueA",
+    "VerQueryValueW",
 };
 
-typedef DWORD (WINAPI *fn_SizeA)(LPCSTR, LPDWORD);
-typedef BOOL  (WINAPI *fn_InfoA)(LPCSTR, DWORD, DWORD, LPVOID);
-typedef BOOL  (WINAPI *fn_QueryA)(LPCVOID, LPCSTR, LPVOID *, PUINT);
-typedef DWORD (WINAPI *fn_LangA)(DWORD, LPSTR, DWORD);
+typedef DWORD(WINAPI *fn_SizeA)(LPCSTR, LPDWORD);
+typedef BOOL(WINAPI *fn_InfoA)(LPCSTR, DWORD, DWORD, LPVOID);
+typedef BOOL(WINAPI *fn_QueryA)(LPCVOID, LPCSTR, LPVOID *, PUINT);
+typedef DWORD(WINAPI *fn_LangA)(DWORD, LPSTR, DWORD);
 
 static char g_logPath[MAX_PATH];
 
 /* Size of the proxy's log file before loading, 0 if absent. */
 static DWORD log_size_before(void)
 {
-    HANDLE h = CreateFileA(g_logPath, GENERIC_READ,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+    HANDLE h = CreateFileA(g_logPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                            OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) return 0;
     DWORD size = GetFileSize(h, NULL);
@@ -61,8 +68,7 @@ static DWORD log_size_before(void)
 
 static BOOL log_has_marker_after(DWORD offset, const char *marker)
 {
-    HANDLE h = CreateFileA(g_logPath, GENERIC_READ,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+    HANDLE h = CreateFileA(g_logPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                            OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
     DWORD size = GetFileSize(h, NULL);
@@ -89,10 +95,9 @@ static DWORD reg_attempt_active(void)
      * same, so the caller compares like with like. */
     DWORD v = 0xFFFFFFFF, sz = sizeof(v), type = 0;
     HKEY k;
-    if (RegOpenKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\sandboxie_unlocker",
-                      0, KEY_READ, &k) == ERROR_SUCCESS) {
-        if (RegQueryValueExA(k, "attempt_active", NULL, &type,
-                             (LPBYTE)&v, &sz) != ERROR_SUCCESS ||
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, "SOFTWARE\\sandboxie_unlocker", 0, KEY_READ, &k) ==
+        ERROR_SUCCESS) {
+        if (RegQueryValueExA(k, "attempt_active", NULL, &type, (LPBYTE)&v, &sz) != ERROR_SUCCESS ||
             type != REG_DWORD || sz != sizeof(v))
             v = 0xFFFFFFFF;
         RegCloseKey(k);
@@ -117,14 +122,20 @@ int main(int argc, char **argv)
 
     HMODULE h = LoadLibraryExA(dllPath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
     CHECK(h != NULL, "LoadLibraryEx(dist\\version.dll)");
-    if (!h) { tf_summary(); return 1; }
+    if (!h) {
+        tf_summary();
+        return 1;
+    }
 
     /* 1. All exports resolvable. */
-    for (int i = 0; i < (int)(sizeof(EXPORTS)/sizeof(EXPORTS[0])); i++) {
+    for (int i = 0; i < (int)(sizeof(EXPORTS) / sizeof(EXPORTS[0])); i++) {
         char name[96];
         _snprintf_s(name, sizeof(name), _TRUNCATE, "export %s", EXPORTS[i]);
         CHECK(GetProcAddress(h, EXPORTS[i]) != NULL, name);
     }
+
+    /* Our own entry point, not a version.dll forward: the removal helper. */
+    CHECK(GetProcAddress(h, "RestoreVendorSigs") != NULL, "restore export present");
 
     DWORD handle = 0;
     char selfPath[MAX_PATH];
@@ -135,8 +146,7 @@ int main(int argc, char **argv)
     fn_SizeA pSize = (fn_SizeA)GetProcAddress(h, "GetFileVersionInfoSizeA");
     fn_InfoA pInfo = (fn_InfoA)GetProcAddress(h, "GetFileVersionInfoA");
     fn_QueryA pQuery = (fn_QueryA)GetProcAddress(h, "VerQueryValueA");
-    CHECK(pSize != NULL && pInfo != NULL && pQuery != NULL,
-          "forwarding core exports present");
+    CHECK(pSize != NULL && pInfo != NULL && pQuery != NULL, "forwarding core exports present");
     if (pSize && pInfo && pQuery) {
         DWORD sz = pSize(selfPath, &handle);
         CHECK(sz > 0 && sz <= 4096, "forwarded GetFileVersionInfoSizeA");
@@ -147,8 +157,9 @@ int main(int argc, char **argv)
             if (got) {
                 char *ver = NULL;
                 UINT verLen = 0;
-                BOOL q = pQuery(block, "\\StringFileInfo\\040904b0\\FileVersion",
-                                (LPVOID *)&ver, &verLen) && ver != NULL;
+                BOOL q = pQuery(block, "\\StringFileInfo\\040904b0\\FileVersion", (LPVOID *)&ver,
+                                &verLen) &&
+                         ver != NULL;
                 CHECK(q, "forwarded VerQueryValueA");
                 if (q) {
                     CHECK(strcmp(ver, SBIE_UNLOCKER_VERSION) == 0,
@@ -165,8 +176,7 @@ int main(int argc, char **argv)
     if (pLang) {
         char lang[64];
         DWORD langLen = pLang(0x0409, lang, sizeof(lang));
-        CHECK(langLen > 0 && langLen < sizeof(lang) && lang[0] != 0,
-              "forwarded VerLanguageNameA");
+        CHECK(langLen > 0 && langLen < sizeof(lang) && lang[0] != 0, "forwarded VerLanguageNameA");
     }
 
     /* 3b. Failure hosts must degrade gracefully, not crash:
@@ -188,18 +198,15 @@ int main(int argc, char **argv)
         }
     }
     {
-        typedef BOOL (WINAPI *fn_ByHandle)(DWORD, HANDLE, LPVOID);
+        typedef BOOL(WINAPI * fn_ByHandle)(DWORD, HANDLE, LPVOID);
         fn_ByHandle pBH = (fn_ByHandle)GetProcAddress(h, "GetFileVersionInfoByHandle");
         CHECK(pBH != NULL, "ByHandle export present");
-        if (pBH) {
-            CHECK(pBH(0, NULL, NULL) == FALSE, "ByHandle degrades to FALSE");
-        }
+        if (pBH) { CHECK(pBH(0, NULL, NULL) == FALSE, "ByHandle degrades to FALSE"); }
     }
 
     /* 4. Host filter: unlock skipped, log marker, registry untouched. */
     Sleep(800);
-    CHECK(log_has_marker_after(logBefore, "not SandMan.exe"),
-          "log gains non-SandMan filter line");
+    CHECK(log_has_marker_after(logBefore, "not SandMan.exe"), "log gains non-SandMan filter line");
     DWORD activeAfter = reg_attempt_active();
     /* cppcheck (--check-level=exhaustive) cannot model WinAPI
      * out-parameters and believes the helper always reports "absent". */

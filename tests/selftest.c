@@ -19,7 +19,7 @@
  *   host       SandMan host predicate
  *   kdrv       staged helper driver content verification
  *   pte        PTE alias math + self-map base vote scan
- *   sigbak     .sig backup policy (refresh / keep / warn)
+ *   sigshadow  vendor .sig shadows (move aside / restore / gate)
  *   sbieapi    SbieDll-backed calls fail cleanly without Sandboxie
  *   kmod       kernel module lookup smoke
  *   log        logger append + truncation
@@ -33,7 +33,7 @@
 #define WIN32_LEAN_AND_MEAN
 /* C6553 is SDK-header SAL noise for RegOpenKeyExA(..., 0, ...); suppress it
  * before the includes, same as the DLL does. */
-#pragma warning(disable: 6553)
+#pragma warning(disable : 6553)
 #include <windows.h>
 #include <bcrypt.h>
 #include <stdio.h>
@@ -53,19 +53,19 @@
 #include "../src/sbieapi.h"
 
 /* CHECK plus early return from a void test function on failure. */
-#define CHECKV(cond, name)                                       \
-    do {                                                         \
-        int _c = (int)!!(cond);                                  \
-        CHECK(_c, name);                                         \
-        if (!_c) return;                                         \
+#define CHECKV(cond, name)      \
+    do {                        \
+        int _c = (int)!!(cond); \
+        CHECK(_c, name);        \
+        if (!_c) return;        \
     } while (0)
 
 /* ---------------- helpers ---------------- */
 
 static BOOL write_file_simple(const char *path, const BYTE *data, DWORD size)
 {
-    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h =
+        CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) return FALSE;
     DWORD written = 0;
     BOOL ok = WriteFile(h, data, size, &written, NULL) && written == size;
@@ -74,9 +74,7 @@ static BOOL write_file_simple(const char *path, const BYTE *data, DWORD size)
 }
 
 static BOOL exists(const char *path)
-{
-    return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
-}
+{ return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES; }
 
 static void temp_path(char *out, size_t cap, const char *leaf)
 {
@@ -90,31 +88,32 @@ static void temp_path(char *out, size_t cap, const char *leaf)
 static void test_base64(void)
 {
     TF_GROUP("base64");
-    static const struct { const char *in; const char *want; } V[] = {
-        { "",       ""         },
-        { "f",      "Zg=="     },
-        { "fo",     "Zm8="     },
-        { "foo",    "Zm9v"     },
-        { "foob",   "Zm9vYg==" },
-        { "fooba",  "Zm9vYmE=" },
-        { "foobar", "Zm9vYmFy" },
+    static const struct {
+        const char *in;
+        const char *want;
+    } V[] = {
+        {"", ""},
+        {"f", "Zg=="},
+        {"fo", "Zm8="},
+        {"foo", "Zm9v"},
+        {"foob", "Zm9vYg=="},
+        {"fooba", "Zm9vYmE="},
+        {"foobar", "Zm9vYmFy"},
     };
-    for (int i = 0; i < (int)(sizeof(V)/sizeof(V[0])); i++) {
+    for (int i = 0; i < (int)(sizeof(V) / sizeof(V[0])); i++) {
         char out[64];
-        int r = ec_base64_encode((const BYTE *)V[i].in,
-                                 (ULONG)strlen(V[i].in), out, sizeof(out));
+        int r = ec_base64_encode((const BYTE *)V[i].in, (ULONG)strlen(V[i].in), out, sizeof(out));
         char name[96];
         _snprintf_s(name, sizeof(name), _TRUNCATE, "encode '%s'", V[i].in);
         CHECK(r == 0 && strcmp(out, V[i].want) == 0, name);
     }
     char tiny[8];
-    CHECK(ec_base64_encode((const BYTE *)"foobar", 6, tiny, sizeof(tiny)) != 0,
-          "dst_cap guard");
+    CHECK(ec_base64_encode((const BYTE *)"foobar", 6, tiny, sizeof(tiny)) != 0, "dst_cap guard");
     /* Exact-fit boundary: 64 bytes need exactly 89 chars incl. NUL. */
-    BYTE sig64[64] = { 0 };
+    BYTE sig64[64] = {0};
     char fit[89];
-    CHECK(ec_base64_encode(sig64, sizeof(sig64), fit, sizeof(fit)) == 0 &&
-          strlen(fit) == 88, "exact-fit buffer accepted");
+    CHECK(ec_base64_encode(sig64, sizeof(sig64), fit, sizeof(fit)) == 0 && strlen(fit) == 88,
+          "exact-fit buffer accepted");
     CHECK(ec_base64_encode(sig64, sizeof(sig64), fit, sizeof(fit) - 1) != 0,
           "one byte short rejected");
 }
@@ -126,8 +125,7 @@ static BCRYPT_KEY_HANDLE vk_import(const BYTE *pub)
     BCRYPT_ALG_HANDLE alg = NULL;
     BCRYPT_KEY_HANDLE k = NULL;
     if (BCryptOpenAlgorithmProvider(&alg, L"ECDSA_P256", NULL, 0) == 0) {
-        (void)BCryptImportKeyPair(alg, NULL, BCRYPT_ECCPUBLIC_BLOB, &k,
-                                  (BYTE *)pub, BLOB_SIZE, 0);
+        (void)BCryptImportKeyPair(alg, NULL, BCRYPT_ECCPUBLIC_BLOB, &k, (BYTE *)pub, BLOB_SIZE, 0);
         BCryptCloseAlgorithmProvider(alg, 0);
     }
     return k;
@@ -137,8 +135,7 @@ static BOOL verify_with_pub(const BYTE *pub, const BYTE *hash, const BYTE *sig)
 {
     BCRYPT_KEY_HANDLE k = vk_import(pub);
     if (!k) return FALSE;
-    NTSTATUS st = BCryptVerifySignature(k, NULL, (PUCHAR)hash, 32,
-                                        (PUCHAR)sig, SIG_SIZE, 0);
+    NTSTATUS st = BCryptVerifySignature(k, NULL, (PUCHAR)hash, 32, (PUCHAR)sig, SIG_SIZE, 0);
     BCryptDestroyKey(k);
     return st == 0;
 }
@@ -148,13 +145,13 @@ static BOOL verify_with_pub(const BYTE *pub, const BYTE *hash, const BYTE *sig)
 static void test_crypto(void)
 {
     TF_GROUP("crypto");
-    ec_keypair_t kp = { 0 };
+    ec_keypair_t kp = {0};
     CHECKV(ec_gen_keypair(&kp) == 0, "ec_gen_keypair");
 
     BYTE pub[BLOB_SIZE];
     CHECKV(ec_export_pub_blob(&kp, pub) == 0, "ec_export_pub_blob");
-    CHECK(pub[0] == 'E' && pub[1] == 'C' && pub[2] == 'S' && pub[3] == '1' &&
-          pub[4] == 0x20 && pub[5] == 0 && pub[6] == 0 && pub[7] == 0,
+    CHECK(pub[0] == 'E' && pub[1] == 'C' && pub[2] == 'S' && pub[3] == '1' && pub[4] == 0x20 &&
+              pub[5] == 0 && pub[6] == 0 && pub[7] == 0,
           "pub blob ECS1 magic + keysize");
 
     BYTE hash[32];
@@ -175,7 +172,7 @@ static void test_crypto(void)
     CHECK(!verify_with_pub(pub, other, sig), "rejects different hash");
 
     /* Zeroed keypair must fail export, not crash. */
-    ec_keypair_t dead = { 0 };
+    ec_keypair_t dead = {0};
     BYTE blob[BLOB_SIZE];
     CHECK(ec_export_pub_blob(&dead, blob) != 0, "export on zeroed keypair fails");
 
@@ -187,7 +184,7 @@ static void test_crypto(void)
 static void test_persist(void)
 {
     TF_GROUP("persist");
-    ec_keypair_t kp = { 0 };
+    ec_keypair_t kp = {0};
     CHECKV(ec_gen_keypair(&kp) == 0, "ec_gen_keypair");
     CHECKV(kp.hKey != NULL, "keypair handle");
 
@@ -199,40 +196,40 @@ static void test_persist(void)
 
     /* In-memory private blob round-trip: export, destroy, re-import. */
     ULONG privLen = 0;
-    CHECKV(BCryptExportKey(kp.hKey, NULL, BCRYPT_ECCPRIVATE_BLOB,
-                           NULL, 0, &privLen, 0) == 0, "private blob size query");
+    CHECKV(BCryptExportKey(kp.hKey, NULL, BCRYPT_ECCPRIVATE_BLOB, NULL, 0, &privLen, 0) == 0,
+           "private blob size query");
     BYTE *priv = (BYTE *)HeapAlloc(GetProcessHeap(), 0, privLen);
-    CHECKV(priv != NULL &&
-           BCryptExportKey(kp.hKey, NULL, BCRYPT_ECCPRIVATE_BLOB,
-                           priv, privLen, &privLen, 0) == 0, "private blob export");
+    CHECKV(priv != NULL && BCryptExportKey(kp.hKey, NULL, BCRYPT_ECCPRIVATE_BLOB, priv, privLen,
+                                           &privLen, 0) == 0,
+           "private blob export");
 
     char path[MAX_PATH];
     temp_path(path, sizeof(path), "sbie_selftest_keypair.dat");
     CHECKV(ec_save_keypair(&kp, path) == 0, "ec_save_keypair");
     ec_free_keypair(&kp);
 
-    ec_keypair_t kp2 = { 0 };
+    ec_keypair_t kp2 = {0};
     CHECKV(BCryptOpenAlgorithmProvider(&kp2.hAlg, L"ECDSA_P256", NULL, 0) == 0 &&
-           BCryptImportKeyPair(kp2.hAlg, NULL, BCRYPT_ECCPRIVATE_BLOB,
-                               &kp2.hKey, priv, privLen, 0) == 0,
+               BCryptImportKeyPair(kp2.hAlg, NULL, BCRYPT_ECCPRIVATE_BLOB, &kp2.hKey, priv, privLen,
+                                   0) == 0,
            "private blob import");
     HeapFree(GetProcessHeap(), 0, priv);
     BYTE sig2[64];
     CHECKV(ec_sign_hash(&kp2, hash, sig2) == 0, "sign after blob reload");
-    CHECK(verify_with_pub(pub, hash, sig2),
-          "blob reload verifies vs original pub");
+    CHECK(verify_with_pub(pub, hash, sig2), "blob reload verifies vs original pub");
     ec_free_keypair(&kp2);
 
     /* File round-trip: the saved file carries an admin-only DACL, so a
      * non-elevated token cannot read it back (security property). */
-    ec_keypair_t kp3 = { 0 };
+    ec_keypair_t kp3 = {0};
     if (ec_load_keypair(&kp3, path) == 0) {
         BYTE sig3[64];
         CHECK(ec_sign_hash(&kp3, hash, sig3) == 0, "sign after file reload");
         CHECK(verify_with_pub(pub, hash, sig3), "file roundtrip verifies");
         ec_free_keypair(&kp3);
     } else {
-        BYTE *probe = NULL; DWORD psize = 0;
+        BYTE *probe = NULL;
+        DWORD psize = 0;
         if (read_file_all(path, &probe, &psize, 4096)) {
             HeapFree(GetProcessHeap(), 0, probe);
             CHECK(FALSE, "file roundtrip (readable but import failed)");
@@ -245,14 +242,17 @@ static void test_persist(void)
 
     /* Junk and missing files must be rejected, not crash. */
     FILE *f = fopen(path, "wb");
-    if (f) { for (int i = 0; i < 100; i++) fputc(0xAA, f); fclose(f); }
-    ec_keypair_t kp4 = { 0 };
+    if (f) {
+        for (int i = 0; i < 100; i++) fputc(0xAA, f);
+        fclose(f);
+    }
+    ec_keypair_t kp4 = {0};
     CHECK(ec_load_keypair(&kp4, path) != 0, "junk keypair rejected");
     DeleteFileA(path);
 
     char missing[MAX_PATH];
     temp_path(missing, sizeof(missing), "sbie_selftest_no_such.dat");
-    ec_keypair_t kp5 = { 0 };
+    ec_keypair_t kp5 = {0};
     CHECK(ec_load_keypair(&kp5, missing) != 0, "missing keypair rejected");
 
     /* A PUBLIC blob (what the kernel holds) is not a private key:
@@ -261,10 +261,70 @@ static void test_persist(void)
     char pubPath[MAX_PATH];
     temp_path(pubPath, sizeof(pubPath), "sbie_selftest_pub.dat");
     if (write_file_simple(pubPath, pub, BLOB_SIZE)) {
-        ec_keypair_t kp6 = { 0 };
+        ec_keypair_t kp6 = {0};
         CHECK(ec_load_keypair(&kp6, pubPath) != 0, "public blob rejected as private");
         DeleteFileA(pubPath);
     }
+}
+
+/* ---------------- boot fast path: public blob from a saved private blob ---
+ *
+ * The fast path runs under the loader lock and must not pull in CNG, so
+ * the kernel key is recovered from keypair.dat as raw bytes. */
+
+static void test_fast_pub(void)
+{
+    TF_GROUP("fastpub");
+    ec_keypair_t kp = {0};
+    CHECKV(ec_gen_keypair(&kp) == 0, "ec_gen_keypair");
+    CHECKV(kp.hKey != NULL, "keypair handle");
+
+    BYTE pub[BLOB_SIZE];
+    CHECKV(ec_export_pub_blob(&kp, pub) == 0, "ec_export_pub_blob");
+
+    ULONG privLen = 0;
+    CHECKV(BCryptExportKey(kp.hKey, NULL, BCRYPT_ECCPRIVATE_BLOB, NULL, 0, &privLen, 0) == 0,
+           "private blob size query");
+    BYTE priv[128];
+    CHECKV(privLen <= sizeof(priv) && BCryptExportKey(kp.hKey, NULL, BCRYPT_ECCPRIVATE_BLOB, priv,
+                                                      sizeof(priv), &privLen, 0) == 0,
+           "private blob export");
+    CHECKV(privLen == 104, "P-256 private blob is 104 bytes");
+    CHECK(memcmp(priv, "ECS2", 4) == 0, "private blob magic is ECS2");
+    ec_free_keypair(&kp);
+
+    BYTE recovered[BLOB_SIZE];
+    CHECKV(ec_pub_from_priv_data(priv, privLen, recovered) == 0, "public blob recovered");
+    CHECK(memcmp(recovered, pub, BLOB_SIZE) == 0, "recovered blob == exported public");
+
+    /* Truncated, wrong-magic and wrong-cbKey blobs must be rejected. */
+    CHECK(ec_pub_from_priv_data(priv, privLen - 1, recovered) != 0, "short blob rejected");
+    BYTE bad[104];
+    memcpy(bad, priv, sizeof(bad));
+    bad[0] = 'X';
+    CHECK(ec_pub_from_priv_data(bad, sizeof(bad), recovered) != 0, "wrong magic rejected");
+    memcpy(bad, priv, sizeof(bad));
+    bad[4] = 0x21;
+    CHECK(ec_pub_from_priv_data(bad, sizeof(bad), recovered) != 0, "wrong cbKey rejected");
+    CHECK(ec_pub_from_priv_data(pub, BLOB_SIZE, recovered) != 0, "public blob rejected as private");
+
+    /* File variant: a saved keypair round-trips, junk does not. */
+    char path[MAX_PATH];
+    temp_path(path, sizeof(path), "sbie_selftest_fastpub.dat");
+    CHECKV(write_file_simple(path, priv, privLen), "keypair fixture written");
+    CHECKV(ec_pub_from_priv_file(path, recovered) == 0, "public blob from file");
+    CHECK(memcmp(recovered, pub, BLOB_SIZE) == 0, "file blob == exported public");
+    DeleteFileA(path);
+
+    BYTE junk[100];
+    memset(junk, 0xAA, sizeof(junk));
+    CHECKV(write_file_simple(path, junk, sizeof(junk)), "junk fixture written");
+    CHECK(ec_pub_from_priv_file(path, recovered) != 0, "junk file rejected");
+    DeleteFileA(path);
+
+    char missing[MAX_PATH];
+    temp_path(missing, sizeof(missing), "sbie_selftest_no_such_fastpub.dat");
+    CHECK(ec_pub_from_priv_file(missing, recovered) != 0, "missing file rejected");
 }
 
 /* ---------------- cert hash ---------------- */
@@ -272,9 +332,8 @@ static void test_persist(void)
 static void test_cert_hash(void)
 {
     TF_GROUP("cethash");
-    BYTE h1[32] = { 0 }, h2[32] = { 0 };
-    CHECK(cert_hash_body(h1) == 0 && cert_hash_body(h2) == 0,
-          "cert_hash_body twice");
+    BYTE h1[32] = {0}, h2[32] = {0};
+    CHECK(cert_hash_body(h1) == 0 && cert_hash_body(h2) == 0, "cert_hash_body twice");
     CHECK(memcmp(h1, h2, 32) == 0, "cert hash deterministic");
 }
 
@@ -300,8 +359,8 @@ static void test_pe_real(const char *pePath)
         DWORD off = sec[i].PointerToRawData + 32;
         DWORD rva = pe_offset_to_rva(data, size, off);
         char name[96];
-        _snprintf_s(name, sizeof(name), _TRUNCATE,
-                    "rva mapping section '%.8s'", (const char *)sec[i].Name);
+        _snprintf_s(name, sizeof(name), _TRUNCATE, "rva mapping section '%.8s'",
+                    (const char *)sec[i].Name);
         CHECK(rva == sec[i].VirtualAddress + 32, name);
         checked++;
     }
@@ -344,6 +403,10 @@ static void pe_fixture_headers(BYTE *buf)
     nt->FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER64);
     nt->FileHeader.Characteristics = IMAGE_FILE_EXECUTABLE_IMAGE;
     nt->OptionalHeader.Magic = IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+    /* Identity fields: pe_image_identity compares exactly these with the
+     * mapped image (SizeOfImage) and the build stamp (TimeDateStamp). */
+    nt->OptionalHeader.SizeOfImage = 0x4000;
+    nt->FileHeader.TimeDateStamp = 0x5F5E1000;
     /* IMAGE_FIRST_SECTION reads FileHeader.SizeOfOptionalHeader at
      * expansion time - only valid AFTER that field is filled in.
      * (Computing it earlier silently aimed the section header into
@@ -367,8 +430,8 @@ static void test_pe_fixture(void)
     memcpy(buf + 0x280, ORIGINAL_KEY, sizeof(ORIGINAL_KEY));
     CHECKV(write_file_simple(path, buf, sizeof(buf)), "fixture A write");
     BOOL writable = FALSE;
-    CHECK(pe_find_key_rva_ex(path, &writable) == 0x1080 &&
-          writable == FALSE, "fixture A: ORIGINAL_KEY RVA (read-only section)");
+    CHECK(pe_find_key_rva_ex(path, &writable) == 0x1080 && writable == FALSE,
+          "fixture A: ORIGINAL_KEY RVA (read-only section)");
     pe_fixture_headers(buf);
     IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION((IMAGE_NT_HEADERS64 *)(buf + 0x40));
     sec->Characteristics = IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_READ;
@@ -378,6 +441,15 @@ static void test_pe_fixture(void)
     CHECK(pe_find_key_rva_ex(path, &writable) == 0x1080 && writable == TRUE,
           "fixture A/writable: writable section reported");
     CHECK(pe_find_key_rva(path) == 0x1080, "fixture A: wrapper keeps the RVA");
+
+    /* Identity: the same headers the driver check compares against. */
+    ULONG idSize = 0, idTs = 0;
+    CHECKV(pe_image_identity(path, &idSize, &idTs), "identity: PE headers read");
+    CHECK(idSize == 0x4000 && idTs == 0x5F5E1000, "identity: SizeOfImage + timestamp");
+    CHECKV(write_file_simple(path, (const BYTE *)"not a PE", 8), "identity: junk write");
+    CHECK(!pe_image_identity(path, NULL, NULL), "identity: non-PE rejected");
+    CHECK(!pe_image_identity("Z:\\no_such_dir\\SbieDrv.sys", NULL, NULL),
+          "identity: missing file rejected");
 
     /* B: patched driver - no ORIGINAL_KEY, single ECS1 magic fallback. */
     pe_fixture_headers(buf);
@@ -409,7 +481,7 @@ static void test_pe_fixture(void)
      * can never fire, the ECS1 fallback must still find the magic
      * inside the partial key. */
     pe_fixture_headers(buf);
-    DWORD truncOff = 0x580;   /* 0x580 + 64 = 0x5C0, inside the section */
+    DWORD truncOff = 0x580; /* 0x580 + 64 = 0x5C0, inside the section */
     memcpy(buf + truncOff, ORIGINAL_KEY, sizeof(ORIGINAL_KEY) - 8);
     CHECKV(write_file_simple(path, buf, sizeof(buf)), "fixture F write");
     CHECK(pe_find_key_rva(path) == 0x1000 + (truncOff - 0x200),
@@ -428,14 +500,14 @@ static void test_pe_fixture(void)
         memcpy(s[0].Name, ".rdata", 7);
         s[0].VirtualAddress = 0x1000;
         s[0].SizeOfRawData = 0x400;
-        s[0].PointerToRawData = 0x200;          /* raw 0x200..0x5FF */
+        s[0].PointerToRawData = 0x200; /* raw 0x200..0x5FF */
         s[0].Characteristics = IMAGE_SCN_MEM_READ;
         memcpy(s[1].Name, ".data", 6);
         s[1].VirtualAddress = 0x2000;
         s[1].SizeOfRawData = 0x400;
-        s[1].PointerToRawData = 0x600;          /* raw 0x600..0x9FF */
+        s[1].PointerToRawData = 0x600; /* raw 0x600..0x9FF */
         s[1].Characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
-        memcpy(buf + 0x5D0, ORIGINAL_KEY, sizeof(ORIGINAL_KEY));  /* crosses 0x600 */
+        memcpy(buf + 0x5D0, ORIGINAL_KEY, sizeof(ORIGINAL_KEY)); /* crosses 0x600 */
     }
     CHECKV(write_file_simple(path, buf, sizeof(buf)), "fixture G write");
     CHECK(pe_find_key_rva(path) == 0, "fixture G: blob across sections -> 0");
@@ -453,8 +525,7 @@ static void test_fileio(void)
 
     char missing[MAX_PATH];
     temp_path(missing, sizeof(missing), "sbie_selftest_missing.bin");
-    CHECK(!read_file_all(missing, &data, &size, 1024) && data == NULL,
-          "missing file -> FALSE");
+    CHECK(!read_file_all(missing, &data, &size, 1024) && data == NULL, "missing file -> FALSE");
 
     char empty[MAX_PATH];
     temp_path(empty, sizeof(empty), "sbie_selftest_empty.bin");
@@ -465,25 +536,23 @@ static void test_fileio(void)
 
     BYTE payload[16];
     memcpy(payload, "0123456789abcdef", sizeof(payload));
-    char small[MAX_PATH];
-    temp_path(small, sizeof(small), "sbie_selftest_small.bin");
-    CHECKV(write_file_simple(small, payload, sizeof(payload)), "write 16B");
-    CHECK(read_file_all(small, &data, &size, 1024) &&
-          size == sizeof(payload) &&
-          memcmp(data, payload, sizeof(payload)) == 0, "read back 16B");
+    char tiny[MAX_PATH];
+    temp_path(tiny, sizeof(tiny), "sbie_selftest_small.bin");
+    CHECKV(write_file_simple(tiny, payload, sizeof(payload)), "write 16B");
+    CHECK(read_file_all(tiny, &data, &size, 1024) && size == sizeof(payload) &&
+              memcmp(data, payload, sizeof(payload)) == 0,
+          "read back 16B");
     HeapFree(GetProcessHeap(), 0, data);
     data = NULL;
-    CHECK(!read_file_all(small, &data, &size, 8) && data == NULL,
-          "size above cap -> FALSE");
-    DeleteFileA(small);
+    CHECK(!read_file_all(tiny, &data, &size, 8) && data == NULL, "size above cap -> FALSE");
+    DeleteFileA(tiny);
 }
 
 /* ---------------- stale staging cleanup ---------------- */
 
 static void backdate(const char *path, ULONG64 seconds)
 {
-    HANDLE h = CreateFileA(path, FILE_WRITE_ATTRIBUTES, 0, NULL,
-                           OPEN_EXISTING, 0, NULL);
+    HANDLE h = CreateFileA(path, FILE_WRITE_ATTRIBUTES, 0, NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) return;
     LARGE_INTEGER now, past;
     GetSystemTimeAsFileTime((FILETIME *)&now);
@@ -494,8 +563,8 @@ static void backdate(const char *path, ULONG64 seconds)
 
 static void touch(const char *path)
 {
-    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h =
+        CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
 }
 
@@ -508,26 +577,27 @@ static void test_stale(void)
     CreateDirectoryA(dir, NULL);
 
     char young[MAX_PATH], old[MAX_PATH], lockedOld[MAX_PATH], other[MAX_PATH];
-    _snprintf_s(young,     sizeof(young),     _TRUNCATE, "%s\\sbie_unlock_young.sys",  dir);
-    _snprintf_s(old,       sizeof(old),       _TRUNCATE, "%s\\sbie_unlock_old.sys",    dir);
+    _snprintf_s(young, sizeof(young), _TRUNCATE, "%s\\sbie_unlock_young.sys", dir);
+    _snprintf_s(old, sizeof(old), _TRUNCATE, "%s\\sbie_unlock_old.sys", dir);
     _snprintf_s(lockedOld, sizeof(lockedOld), _TRUNCATE, "%s\\sbie_unlock_locked.sys", dir);
-    _snprintf_s(other,     sizeof(other),     _TRUNCATE, "%s\\sbie_unlock_keep.dll",   dir);
+    _snprintf_s(other, sizeof(other), _TRUNCATE, "%s\\sbie_unlock_keep.dll", dir);
 
     touch(young);
-    touch(old);       backdate(old, 120);
-    touch(lockedOld); backdate(lockedOld, 120);
+    touch(old);
+    backdate(old, 120);
+    touch(lockedOld);
+    backdate(lockedOld, 120);
     touch(other);
 
-    HANDLE held = CreateFileA(lockedOld, GENERIC_READ, 0, NULL,
-                              OPEN_EXISTING, 0, NULL);
+    HANDLE held = CreateFileA(lockedOld, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
     CHECK(held != INVALID_HANDLE_VALUE, "test setup: lock held");
 
     cleanup_stale_temp_drivers(dir);
 
-    CHECK(exists(young),     "keeps young file (grace)");
-    CHECK(!exists(old),      "deletes old unlocked file");
+    CHECK(exists(young), "keeps young file (grace)");
+    CHECK(!exists(old), "deletes old unlocked file");
     CHECK(exists(lockedOld), "skips old locked file");
-    CHECK(exists(other),     "leaves non-.sys files");
+    CHECK(exists(other), "leaves non-.sys files");
 
     if (held != INVALID_HANDLE_VALUE) CloseHandle(held);
     DeleteFileA(young);
@@ -571,7 +641,7 @@ static BOOL b64_decode(const char *src, BYTE *dst, DWORD dst_cap, DWORD *out_len
 static void test_cert(void)
 {
     TF_GROUP("cert");
-    ec_keypair_t kp = { 0 };
+    ec_keypair_t kp = {0};
     CHECKV(ec_gen_keypair(&kp) == 0, "keygen");
 
     /* Export the public blob up front: the file's SIGNATURE must verify
@@ -588,7 +658,8 @@ static void test_cert(void)
 
     char path[MAX_PATH];
     _snprintf_s(path, sizeof(path), _TRUNCATE, "%s\\Certificate.dat", dir);
-    BYTE *data = NULL; DWORD size = 0;
+    BYTE *data = NULL;
+    DWORD size = 0;
     if (!read_file_all(path, &data, &size, 64 * 1024)) {
         CHECK(FALSE, "Certificate.dat readable");
         ec_free_keypair(&kp);
@@ -611,9 +682,9 @@ static void test_cert(void)
         BYTE fileSig[64];
         DWORD fileSigLen = 0;
         CHECK(b64_decode(line + 11, fileSig, sizeof(fileSig), &fileSigLen) &&
-              fileSigLen == SIG_SIZE, "signature decodes to 64 bytes");
-        CHECK(verify_with_pub(pub, hash, fileSig),
-              "file signature verifies against key");
+                  fileSigLen == SIG_SIZE,
+              "signature decodes to 64 bytes");
+        CHECK(verify_with_pub(pub, hash, fileSig), "file signature verifies against key");
     }
 
     HeapFree(GetProcessHeap(), 0, data);
@@ -632,24 +703,20 @@ static void test_sec(void)
     SECURITY_ATTRIBUTES sa;
     SECURITY_DESCRIPTOR sd;
     BYTE acl[512];
-    CHECKV(build_restrictive_sa(&sa, &sd, (PACL)acl, sizeof(acl)),
-           "build_restrictive_sa");
+    CHECKV(build_restrictive_sa(&sa, &sd, (PACL)acl, sizeof(acl)), "build_restrictive_sa");
 
-    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, &sa,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     CHECKV(h != INVALID_HANDLE_VALUE, "create with restrictive DACL");
     const BYTE payload[8] = "SECDATA";
     DWORD written = 0;
     WriteFile(h, payload, sizeof(payload), &written, NULL);
     CloseHandle(h);
 
-    HANDLE r = CreateFileA(path, GENERIC_READ, 0, NULL,
-                           OPEN_EXISTING, 0, NULL);
+    HANDLE r = CreateFileA(path, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
     if (tf_is_elevated()) {
         CHECK(r != INVALID_HANDLE_VALUE, "elevated token reads back");
     } else {
-        CHECK(r == INVALID_HANDLE_VALUE &&
-              GetLastError() == ERROR_ACCESS_DENIED,
+        CHECK(r == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED,
               "non-elevated token denied");
     }
     if (r != INVALID_HANDLE_VALUE) CloseHandle(r);
@@ -666,9 +733,7 @@ static void safety_reset_key(void)
 }
 
 static DWORD safety_reg_value(const char *name)
-{
-    return safety_read_dword(name, 0xFFFFFFFF);
-}
+{ return safety_read_dword(name, 0xFFFFFFFF); }
 
 static void test_safety(void)
 {
@@ -743,8 +808,7 @@ static void test_kdrv_verify(void)
     char path[MAX_PATH];
     temp_path(path, sizeof(path), "sbie_selftest_stage.sys");
 
-    CHECKV(write_file_simple(path, g_driver_bin, g_driver_size),
-           "stage driver bytes");
+    CHECKV(write_file_simple(path, g_driver_bin, g_driver_size), "stage driver bytes");
     CHECK(kdrv_verify_driver_file(path) == TRUE, "exact embedded bytes verify");
 
     /* One flipped byte must fail verification (swap-race guard). */
@@ -758,8 +822,7 @@ static void test_kdrv_verify(void)
     CHECK(kdrv_verify_driver_file(path) == FALSE, "corrupted byte rejected");
 
     /* Truncated file rejected. */
-    CHECKV(write_file_simple(path, g_driver_bin, g_driver_size - 1),
-           "truncate stage file");
+    CHECKV(write_file_simple(path, g_driver_bin, g_driver_size - 1), "truncate stage file");
     CHECK(kdrv_verify_driver_file(path) == FALSE, "truncated file rejected");
     DeleteFileA(path);
 }
@@ -780,8 +843,7 @@ static void test_pte(void)
     const ULONG64 PTE_BASE = 0xFFFFF68000000000ULL;
 
     CHECK(kdrv_pte_va(PTE_BASE, 0) == PTE_BASE, "page 0 PTE");
-    CHECK(kdrv_pte_va(PTE_BASE, 0x1000) == PTE_BASE + 8,
-          "consecutive pages are 8 bytes apart");
+    CHECK(kdrv_pte_va(PTE_BASE, 0x1000) == PTE_BASE + 8, "consecutive pages are 8 bytes apart");
 
     /* Real key VA from the 0xBE dump (SbieDrv base + RVA 0x330C0): only the
      * low 36 bits of (va >> 12) are indices, the canonical sign extension
@@ -824,9 +886,14 @@ static void test_pte(void)
     BYTE code[64];
 
     memset(code, 0x90, sizeof(code));
-    code[0] = 0x48; code[1] = 0x8B; code[2] = 0x05;    /* mov rax, [rip+disp] */
+    code[0] = 0x48;
+    code[1] = 0x8B;
+    code[2] = 0x05; /* mov rax, [rip+disp] */
     memcpy(code + 3, &disp, sizeof(disp));
-    code[7] = 0x48; code[8] = 0xC1; code[9] = 0xEB; code[10] = 0x09;  /* shr rbx,9 */
+    code[7] = 0x48;
+    code[8] = 0xC1;
+    code[9] = 0xEB;
+    code[10] = 0x09; /* shr rbx,9 */
     kdrv_rank_refs(code, sizeof(code), code_va, targets, &target_count);
     CHECK(target_count == 1 && targets[0].target == storage && targets[0].refs == 1,
           "live 24H2 reference votes for MmPteBase");
@@ -835,26 +902,43 @@ static void test_pte(void)
     CHECK(target_count == 1 && targets[0].refs == 2, "repeated reference adds a vote");
 
     memset(code, 0x90, sizeof(code));
-    code[0] = 0x4C; code[1] = 0x8B; code[2] = 0x0D;    /* mov r9, [rip+disp] */
+    code[0] = 0x4C;
+    code[1] = 0x8B;
+    code[2] = 0x0D; /* mov r9, [rip+disp] */
     memcpy(code + 3, &disp, sizeof(disp));
-    code[7] = 0x48; code[8] = 0xC1; code[9] = 0xEA; code[10] = 0x09;  /* shr rdx,9 */
+    code[7] = 0x48;
+    code[8] = 0xC1;
+    code[9] = 0xEA;
+    code[10] = 0x09; /* shr rdx,9 */
     target_count = 0;
     kdrv_rank_refs(code, sizeof(code), code_va, targets, &target_count);
     CHECK(target_count == 1 && targets[0].target == storage, "another register is scored");
 
     memset(code, 0x90, sizeof(code));
-    code[0] = 0x48; code[1] = 0x8B; code[2] = 0x05;    /* plain load, no PTE math */
+    code[0] = 0x48;
+    code[1] = 0x8B;
+    code[2] = 0x05; /* plain load, no PTE math */
     memcpy(code + 3, &disp, sizeof(disp));
-    code[7] = 0x48; code[8] = 0x8B; code[9] = 0xCB;
+    code[7] = 0x48;
+    code[8] = 0x8B;
+    code[9] = 0xCB;
     target_count = 0;
     kdrv_rank_refs(code, sizeof(code), code_va, targets, &target_count);
     CHECK(target_count == 0, "a global without PTE arithmetic gets no vote");
 
     memset(code, 0x90, sizeof(code));
-    code[0] = 0x48; code[1] = 0x8B; code[2] = 0x05;    /* mov rax, [rip+disp] */
+    code[0] = 0x48;
+    code[1] = 0x8B;
+    code[2] = 0x05; /* mov rax, [rip+disp] */
     memcpy(code + 3, &disp, sizeof(disp));
-    code[7] = 0x48; code[8] = 0x8D; code[9] = 0x1C; code[10] = 0xDD;
-    code[11] = 0; code[12] = 0; code[13] = 0; code[14] = 0;  /* lea rbx,[rbx*8] */
+    code[7] = 0x48;
+    code[8] = 0x8D;
+    code[9] = 0x1C;
+    code[10] = 0xDD;
+    code[11] = 0;
+    code[12] = 0;
+    code[13] = 0;
+    code[14] = 0; /* lea rbx,[rbx*8] */
     target_count = 0;
     kdrv_rank_refs(code, sizeof(code), code_va, targets, &target_count);
     CHECK(target_count == 1 && targets[0].target == storage, "lea *8 spelling scores");
@@ -880,7 +964,7 @@ static void test_pte(void)
     IMAGE_SECTION_HEADER secs[2];
     memset(secs, 0, sizeof(secs));
     secs[0].VirtualAddress = 0x1000;
-    secs[0].Misc.VirtualSize = 0x2000;      /* raw data ends at 0x2000 */
+    secs[0].Misc.VirtualSize = 0x2000; /* raw data ends at 0x2000 */
     secs[0].SizeOfRawData = 0x1000;
     secs[0].Characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_CNT_INITIALIZED_DATA;
     secs[1].VirtualAddress = 0x5000;
@@ -898,11 +982,11 @@ static void test_pte(void)
           "an address outside every section is rejected");
 }
 
-/* ---------------- .sig backup policy ---------------- */
+/* ---------------- vendor signature shadows ---------------- */
 
-static void test_sigbak(void)
+static void test_sigshadow(void)
 {
-    TF_GROUP("sigbak");
+    TF_GROUP("sigshadow");
 
     /* "Vendor" key (stands in for the baked ORIGINAL_KEY, whose private
      * half nobody has) and "our" re-signing key. */
@@ -910,67 +994,89 @@ static void test_sigbak(void)
     BYTE vendorPub[BLOB_SIZE], ourPub[BLOB_SIZE];
     CHECKV(ec_gen_keypair(&vendor) == 0 && ec_export_pub_blob(&vendor, vendorPub) == 0,
            "vendor keypair");
-    CHECKV(ec_gen_keypair(&ours) == 0 && ec_export_pub_blob(&ours, ourPub) == 0,
-           "our keypair");
+    CHECKV(ec_gen_keypair(&ours) == 0 && ec_export_pub_blob(&ours, ourPub) == 0, "our keypair");
 
-    char dir[MAX_PATH], bdir[MAX_PATH], exe[MAX_PATH], sig[MAX_PATH], bsig[MAX_PATH];
-    temp_path(dir, sizeof(dir), "sbie_selftest_sigbak");
-    temp_path(bdir, sizeof(bdir), "sbie_selftest_sigbak\\backup");
-    temp_path(exe, sizeof(exe), "sbie_selftest_sigbak\\App.exe");
-    temp_path(sig, sizeof(sig), "sbie_selftest_sigbak\\App.exe.sig");
-    temp_path(bsig, sizeof(bsig), "sbie_selftest_sigbak\\backup\\App.exe.sig");
+    char dir[MAX_PATH], exe[MAX_PATH], sig[MAX_PATH], shadow[MAX_PATH];
+    temp_path(dir, sizeof(dir), "sbie_selftest_sigshadow");
+    temp_path(exe, sizeof(exe), "sbie_selftest_sigshadow\\App.exe");
+    temp_path(sig, sizeof(sig), "sbie_selftest_sigshadow\\App.exe.sig");
+    temp_path(shadow, sizeof(shadow), "sbie_selftest_sigshadow\\App.exe.sig.vendor");
 
     CHECKV(CreateDirectoryA(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS,
            "create fixture dir");
+    /* Leftovers from an aborted run must not fake a signature. */
+    DeleteFileA(sig);
+    DeleteFileA(shadow);
     CHECKV(write_file_simple(exe, (const BYTE *)"fake executable payload", 24),
            "write fixture exe");
 
     BYTE hash[32];
     CHECKV(sha256_file(exe, hash) == 0, "hash fixture exe");
-
     BYTE vendorSig[SIG_SIZE], ourSig[SIG_SIZE];
     CHECKV(ec_sign_hash(&vendor, hash, vendorSig) == 0, "sign with vendor key");
     CHECKV(ec_sign_hash(&ours, hash, ourSig) == 0, "sign with our key");
 
-    CHECK(ec_verify_pub(vendorPub, hash, vendorSig) == 0,
-          "verify helper accepts a valid signature");
-    BYTE bad[SIG_SIZE];
-    memcpy(bad, vendorSig, sizeof(bad));
-    bad[7] ^= 0xFF;
-    CHECK(ec_verify_pub(vendorPub, hash, bad) != 0, "verify helper rejects a corrupted signature");
-    CHECK(ec_verify_pub(ourPub, hash, vendorSig) != 0, "verify helper rejects a foreign key");
-
     CHECK(cert_sig_is_vendor(exe, sig, vendorPub) == -1, "missing .sig is unreadable");
 
-    /* 1. Vendor-signed install, no backup yet -> backup written. */
+    /* 1. Stock install: the vendor signature moves aside, ours lands. */
     CHECKV(write_file_simple(sig, vendorSig, sizeof(vendorSig)), "write vendor .sig");
     CHECK(cert_sig_is_vendor(exe, sig, vendorPub) == 1, "vendor .sig recognized");
-    cert_backup_sigs_ex(dir, bdir, vendorPub);
-    CHECK(exists(bsig) && cert_sig_is_vendor(exe, bsig, vendorPub) == 1,
-          "vendor .sig backed up");
+    CHECK(cert_vendor_sigs_preserved(dir, vendorPub), "stock install is removable");
+    int unp = 0;
+    CHECK(cert_sign_all(dir, &ours, vendorPub, &unp) == 1 && unp == 0, "signed one file");
+    CHECK(cert_sig_is_vendor(exe, shadow, vendorPub) == 1, "vendor signature kept as a shadow");
+    CHECK(cert_sig_is_vendor(exe, sig, ourPub) == 1, "installed .sig is ours");
 
-    /* 2. Stale backup + vendor-signed install -> backup refreshed. */
-    CHECKV(write_file_simple(bsig, ourSig, sizeof(ourSig)), "make the backup stale");
-    CHECK(cert_sig_is_vendor(exe, bsig, vendorPub) != 1, "stale backup is not vendor-signed");
-    cert_backup_sigs_ex(dir, bdir, vendorPub);
-    CHECK(cert_sig_is_vendor(exe, bsig, vendorPub) == 1,
-          "stale backup refreshed from the vendor-signed install");
+    /* 2. Already signed: the shadow is untouched and the gate stays open. */
+    CHECKV(write_file_simple(sig, ourSig, sizeof(ourSig)), "rewrite our .sig");
+    CHECK(cert_vendor_sigs_preserved(dir, vendorPub), "shadow keeps the install removable");
+    unp = 0;
+    CHECK(cert_sign_all(dir, &ours, vendorPub, &unp) == 1 && unp == 0, "re-sign with a shadow");
+    CHECK(cert_sig_is_vendor(exe, shadow, vendorPub) == 1, "shadow still holds the vendor file");
 
-    /* 3. Installed .sig already re-signed by us -> the good backup is kept. */
-    CHECKV(write_file_simple(sig, ourSig, sizeof(ourSig)), "re-sign the installed .sig");
-    cert_backup_sigs_ex(dir, bdir, vendorPub);
-    CHECK(cert_sig_is_vendor(exe, bsig, vendorPub) == 1,
-          "valid backup kept when the installed .sig is not vendor-signed");
+    /* 3. Shadow lost: nothing may be overwritten and the gate closes. */
+    CHECKV(DeleteFileA(shadow), "drop the shadow");
+    CHECK(!cert_vendor_sigs_preserved(dir, vendorPub), "lost vendor signature closes the gate");
+    unp = 0;
+    CHECK(cert_sign_all(dir, &ours, vendorPub, &unp) == 0 && unp == 1,
+          "unpreservable file is left alone");
+    CHECK(cert_sig_is_vendor(exe, sig, ourPub) == 1, "the file was not touched");
 
-    /* 4. No usable backup and no vendor signature: nothing may be
-     * destroyed, the operator has to repair the install. */
-    CHECKV(write_file_simple(bsig, bad, sizeof(bad)), "spoil the backup");
-    cert_backup_sigs_ex(dir, bdir, vendorPub);
-    CHECK(exists(bsig) && cert_sig_is_vendor(exe, bsig, vendorPub) != 1,
-          "unusable backup is left untouched (no data loss)");
+    /* 4. Restore puts the vendor file back and removes the shadow. */
+    CHECKV(write_file_simple(shadow, vendorSig, sizeof(vendorSig)), "restore fixture shadow");
+    int failed = 0;
+    CHECK(cert_restore_vendor_sigs(dir, vendorPub, &failed) == 1 && failed == 0,
+          "restored one signature");
+    CHECK(cert_sig_is_vendor(exe, sig, vendorPub) == 1, "restored .sig is the vendor file");
+    CHECK(!exists(shadow), "shadow removed after restore");
 
-    DeleteFileA(sig); DeleteFileA(bsig); DeleteFileA(exe);
-    RemoveDirectoryA(bdir); RemoveDirectoryA(dir);
+    /* 5. A shadow that does not verify is kept and reported. */
+    CHECKV(write_file_simple(shadow, ourSig, sizeof(ourSig)), "write a bad shadow");
+    failed = 0;
+    CHECK(cert_restore_vendor_sigs(dir, vendorPub, &failed) == 0 && failed == 1,
+          "bad shadow reported");
+    CHECK(exists(shadow), "bad shadow kept for a later repair");
+    CHECKV(DeleteFileA(shadow), "drop the bad shadow");
+
+    /* 6. The older sig_backup/ directory is migrated into shadows. */
+    char bdir[MAX_PATH], bfile[MAX_PATH], marker[MAX_PATH];
+    temp_path(bdir, sizeof(bdir), "sbie_selftest_sigshadow\\sig_backup");
+    temp_path(bfile, sizeof(bfile), "sbie_selftest_sigshadow\\sig_backup\\App.exe.sig");
+    temp_path(marker, sizeof(marker), "sbie_selftest_sigshadow\\sig_backup\\verified");
+    CHECKV(CreateDirectoryA(bdir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS,
+           "create backup dir");
+    CHECKV(write_file_simple(bfile, vendorSig, sizeof(vendorSig)), "write backup file");
+    CHECKV(write_file_simple(marker, (const BYTE *)"x", 1), "write marker");
+    cert_migrate_backup(dir, vendorPub);
+    CHECK(cert_sig_is_vendor(exe, shadow, vendorPub) == 1, "backup migrated into a shadow");
+    CHECK(!exists(marker), "marker consumed by the migration");
+
+    DeleteFileA(sig);
+    DeleteFileA(shadow);
+    DeleteFileA(exe);
+    DeleteFileA(bfile);
+    RemoveDirectoryA(bdir);
+    RemoveDirectoryA(dir);
     ec_free_keypair(&vendor);
     ec_free_keypair(&ours);
 }
@@ -1009,27 +1115,25 @@ static void test_sbieapi(const char *dllPath)
 static void test_kmod(void)
 {
     TF_GROUP("kmod");
-    ULONG size = 0;
-    ULONG64 base = kmod_find("ntoskrnl", &size);
-    /* Non-elevated tokens may receive a list with every ImageBase
-     * zeroed (observed on recent builds) - the product only runs
-     * elevated, so the hard check is elevation-gated. */
+    ULONG64 base = kmod_find("ntoskrnl.exe");
+    /* An unelevated token can receive every ImageBase zeroed (seen on
+     * 24H2), so the lookup is asserted only when elevated - the product
+     * only calls it from the elevated helper. */
     if (!tf_is_elevated() && base == 0) {
-        SKIP_TEST("ntoskrnl lookup", "module bases zeroed for non-elevated token");
+        SKIP_TEST("ntoskrnl lookup", "driver bases are zeroed for an unelevated token");
     } else {
-        CHECK(base != 0, "ntoskrnl found in kernel module list");
-        CHECK(size > 0x100000, "module image size sane");
+        CHECK(base != 0, "ntoskrnl.exe found in the driver list");
+        CHECK(kmod_find("NTOSKRNL.EXE") == base, "name match is case-insensitive");
     }
-    CHECK(kmod_find("definitely_not_a_kernel_module_xyz", NULL) == 0,
-          "absent module -> 0");
+    CHECK(kmod_find("definitely_not_a_kernel_module_xyz") == 0, "absent module -> 0");
 }
 
 /* ---------------- logger ---------------- */
 
 static DWORD file_size(const char *path)
 {
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                           OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) return 0;
     DWORD size = GetFileSize(h, NULL);
     CloseHandle(h);
@@ -1065,14 +1169,14 @@ static void test_log(void)
     if (dot) strcpy_s(dot, MAX_PATH - (dot - oldp), ".old.log");
     DeleteFileA(oldp);
 
-    HANDLE h = CreateFileA(logp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h =
+        CreateFileA(logp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     CHECK(h != INVALID_HANDLE_VALUE, "rotate fixture created");
     if (h != INVALID_HANDLE_VALUE) {
         static char chunk[65536];
         memset(chunk, 'z', sizeof(chunk));
         DWORD written;
-        for (int i = 0; i < 17; i++)          /* 1 MB + 64 KB: over the cap */
+        for (int i = 0; i < 17; i++) /* 1 MB + 64 KB: over the cap */
             WriteFile(h, chunk, sizeof(chunk), &written, NULL);
         CloseHandle(h);
     }
@@ -1092,6 +1196,7 @@ int main(int argc, char **argv)
     test_base64();
     test_crypto();
     test_persist();
+    test_fast_pub();
     test_cert_hash();
     test_pe_real(pePath);
     test_pe_fixture();
@@ -1103,7 +1208,7 @@ int main(int argc, char **argv)
     test_host();
     test_kdrv_verify();
     test_pte();
-    test_sigbak();
+    test_sigshadow();
     test_sbieapi(pePath);
     test_kmod();
     test_log();
