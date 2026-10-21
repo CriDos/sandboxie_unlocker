@@ -1,7 +1,7 @@
 <h1 align="center">Sandboxie-Plus Unlocker</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Windows-10_%7C_11_x64-0078d6?logo=windows&logoColor=white" alt="Windows 10 / 11 x64" />
+  <img src="https://img.shields.io/badge/Windows-7_%7C_10_%7C_11_x64-0078d6?logo=windows&logoColor=white" alt="Windows 7 / 10 / 11 x64" />
   <img src="https://img.shields.io/badge/C-MSVC_2022-555555?logo=c&logoColor=white" alt="C" />
   <img src="https://img.shields.io/github/v/release/CriDos/sandboxie_unlocker?label=Release" alt="Release" />
   <img src="https://img.shields.io/github/actions/workflow/status/CriDos/sandboxie_unlocker/ci.yml?label=CI" alt="CI" />
@@ -17,7 +17,7 @@
 
 Full kernel-level certificate unlock for Sandboxie-Plus **1.17.x–1.18.x** through a single `version.dll` proxy: it replaces the ECDSA public key of `SbieDrv.sys` in kernel memory, writes a matching `Certificate.dat` and re-signs the `.exe.sig` files. No test-signing and no extra input files — everything needed is embedded in the DLL.
 
-**Windows x64 only.** Tested on Windows 10 22H2 (19045.6691) and Windows 11 24H2 (26100) with Sandboxie-Plus 1.17.9, 1.18.0, 1.18.2, 1.18.7 and 1.18.8.
+**Windows x64 only.** Tested on Windows 7 SP1 (7601.24552), Windows 10 22H2 (19045.6691) and Windows 11 24H2 (26100) with Sandboxie-Plus 1.17.9, 1.18.0, 1.18.2, 1.18.7 and 1.18.8.
 
 ## How it works
 
